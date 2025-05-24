@@ -8,8 +8,7 @@ from feature_matcher.keypoints_match_producer import (
     get_keypoints_match_producer,
 )
 from feature_matcher.tools import create_show_image, plot_matches
-
-from src.PinholeCamera import PinholeCamera
+from utils.PinholeCamera import PinholeCamera
 
 
 def get_object_pose(

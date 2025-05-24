@@ -10,6 +10,7 @@
   <exec_depend>python-transforms3d-pip</exec_depend>
 
   <depend>bb_msgs</depend>
+  <depend>yolo_msgs</depend>
   <depend>image_transport</depend>
   <depend>python-opencv-contrib-pip</depend>
   <depend>python3-imutils-pip</depend>

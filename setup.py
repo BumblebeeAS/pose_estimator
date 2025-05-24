@@ -21,9 +21,7 @@ setup(
             glob(os.path.join("src", "*.py")),
         ),
     ],
-    install_requires=[
-        "setuptools",
-    ],
+    install_requires=["setuptools"],
     zip_safe=True,
     maintainer="todo",
     maintainer_email="todo@todo.com",

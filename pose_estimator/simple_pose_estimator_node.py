@@ -18,7 +18,7 @@ from sensor_msgs.msg import CameraInfo
 from transforms3d.quaternions import mat2quat
 from utils.ros_np_multiarray import to_numpy_f64
 
-from src.PinholeCamera import PinholeCamera
+from pose_estimator.utils.PinholeCamera import PinholeCamera
 
 
 class SimplePoseEstimator(Node):

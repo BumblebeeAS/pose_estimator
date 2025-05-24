@@ -22,11 +22,8 @@ from sensor_msgs.msg import CameraInfo
 from transforms3d.quaternions import mat2quat
 from yolo_msgs.msg import Detection, DetectionArray
 
-from pose_estimator.simple_pose_estimator_node import (
-    estimate_covariance,
-    get_object_pose,
-)
-from src.PinholeCamera import PinholeCamera
+from pose_estimator.utils.PinholeCamera import PinholeCamera
+from pose_estimator.utils.pose_estimator import estimate_covariance, get_object_pose
 
 
 def polygon_to_obb(points: np.ndarray) -> np.ndarray:
