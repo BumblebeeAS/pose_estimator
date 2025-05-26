@@ -72,7 +72,7 @@ class SimplePoseEstimator(Node):
         object_points, image_points = filter_by_homography(object_points, image_points)
 
         try:
-            # This step gives a rough estimate of the pose for solvePnPRefineLM and
+            # This step gives a rough estimate for pose refinement and
             # allows for quick termination if no inliers are found. This is useful
             # when there are few point correspondences and homography estimation
             # cannot determine if the points are inliers or not.
@@ -83,6 +83,10 @@ class SimplePoseEstimator(Node):
 
             if inliers is None:
                 raise ValueError("No inliers found during pose estimation.")
+
+            # We use don't filter by RANSAC inliers before refinement because RANSAC filtering
+            # is too strict, resulting in a noisy pose estimate. Filtering is already done
+            # by the homography.
 
             rvec, tvec = refine_object_pose(
                 self.camera, object_points, image_points, rvec, tvec

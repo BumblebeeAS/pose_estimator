@@ -33,7 +33,6 @@ class GatePoseEstimator(Node):
         super().__init__("gate_pose_estimator_node")
         self.bridge = CvBridge()
 
-        self.declare_parameter("camera_frame_id", "auv4/front_cam_optical")
         self.declare_parameter("object_frame_id", "wesley_please_come_lab")
         self.declare_parameter("camera_info_topic", "camera_info")
         self.declare_parameter("detections_topic", "yolo/detections")
@@ -138,7 +137,7 @@ class GatePoseEstimator(Node):
 
         transform_stamped = TransformStamped()
         transform_stamped.header = msg.header
-        transform_stamped.child_frame_id = "wesley_please_come_lab"
+        transform_stamped.child_frame_id = self.object_frame_id
         transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
         transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
 
