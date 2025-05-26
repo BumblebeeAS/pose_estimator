@@ -21,6 +21,7 @@ from yolo_msgs.msg import DetectionArray
 from pose_estimator.utils.detections import (
     OBJECT_POINTS_DICT,
     get_best_detections_per_class,
+    get_normalized_coords_array,
     polygon_to_obb,
 )
 from pose_estimator.utils.PinholeCamera import PinholeCamera
@@ -83,7 +84,8 @@ class GatePoseEstimator(Node):
 
             mask = detection.mask
             mask_points = [attrgetter("x", "y")(point) for point in mask.data]
-            curr_image_points = polygon_to_obb(mask_points)
+            mask_obb = polygon_to_obb(mask_points)
+            curr_image_points = get_normalized_coords_array(mask_obb)
             image_points.extend(curr_image_points)
 
         object_points = np.array(object_points)

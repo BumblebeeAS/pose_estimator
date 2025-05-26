@@ -1,7 +1,9 @@
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
+import cv2
 import numpy as np
 import shapely
+import sympy
 from yolo_msgs.msg import Detection, DetectionArray
 
 _object_points_mm_dict = {
@@ -32,27 +34,121 @@ for key, object_points_mm in _object_points_mm_dict.items():
     )
     OBJECT_POINTS_DICT[key] = np.array(object_points, dtype=np.float32)
 
+BIN_OBJECT_POINTS = np.array(
+    [(0, 0), (0, 609.60), (304.80, 609.60), (304.80, 0)],
+    dtype=np.float32,
+)
 
-def polygon_to_obb(points: np.ndarray) -> np.ndarray:
-    """Compute the Oriented Bounding Box (OBB) of a polygon in strict canonical form.
+
+def get_normalized_coords_array(polygon: shapely.Polygon | Sequence) -> np.ndarray:
+    """Get the normalized NumPy coordinates array of a polygon in
+    strict canonical form.
+
+    Args:
+        array (shapely.Polygon | Sequence): The polygon to normalize. It can be a
+        shapely.Polygon or a sequence of points (e.g., list of tuples).
+
+    Returns:
+        np.ndarray: Coordinates of the polygon in strict canonical form. The
+        points are ordered anti-clockwise from top-left (because the y-coordinate
+        increases downwards in the image coordinate system).
+    """
+    polygon = shapely.Polygon(polygon)
+    polygon = polygon.normalize()
+
+    # Exclude the the last point as `exterior.coords` repeats the starting point
+    # at the end of the list
+    coords_array = np.array(polygon.exterior.coords[:-1])
+
+    return coords_array
+
+
+def polygon_to_obb(points: np.ndarray) -> shapely.Polygon:
+    """Compute the Oriented Bounding Box (OBB) from a NumPy coordinate array
+    of a polygon.
 
     Args:
         points (np.ndarray): N x 2 array of points representing the polygon.
 
     Returns:
-        np.ndarray: Oriented bounding box represented as a 4 x 2 array of points.
-        The points are ordered from top-left to top-right in an anti-clockwise
-        manner. Note the vertical direction is different since the y-coordinate
-        increases downwards in the image coordinate system.
+        shapely.Polygon: Oriented bounding box of the polygon.
     """
     polygon = shapely.Polygon(points)
-    min_area_rect = polygon.minimum_rotated_rectangle.normalize()
+    min_area_rect = polygon.minimum_rotated_rectangle
 
-    # Exclude the the last point as `exterior.coords` repeats the starting point
-    # at the end of the list
-    coords_array = np.array(min_area_rect.exterior.coords[:4])
+    return min_area_rect
 
-    return coords_array
+
+# Source: https://stackoverflow.com/a/74620309
+def get_best_fit_ngon(points: np.ndarray, n: int = 4) -> np.ndarray:
+    """Get the NumPy coordinate array forming the best fit convex n-gon
+    for a collection of (unordered) points.
+
+    Args:
+        points (np.ndarray):  N x 2 array of points.
+        n (int, optional): Number of sides of best-fit polygon. Defaults to 4.
+
+    Raises:
+        ValueError: If the best fit n-gon cannot be found.
+
+    Returns:
+        np.ndarray: N x 2 array of points representing the polygon.
+    """
+    hull = cv2.convexHull(points)
+    hull = np.array(hull).reshape((len(hull), 2))
+    hull = [sympy.Point(*pt) for pt in hull]
+
+    # run until we cut down to n vertices
+    while len(hull) > n:
+        best_candidate = None
+
+        # for all edges in hull ( <edge_idx_1>, <edge_idx_2> ) ->
+        for edge_idx_1 in range(len(hull)):
+            edge_idx_2 = (edge_idx_1 + 1) % len(hull)
+
+            adj_idx_1 = (edge_idx_1 - 1) % len(hull)
+            adj_idx_2 = (edge_idx_1 + 2) % len(hull)
+
+            edge_pt_1 = sympy.Point(*hull[edge_idx_1])
+            edge_pt_2 = sympy.Point(*hull[edge_idx_2])
+            adj_pt_1 = sympy.Point(*hull[adj_idx_1])
+            adj_pt_2 = sympy.Point(*hull[adj_idx_2])
+
+            subpoly = sympy.Polygon(adj_pt_1, edge_pt_1, edge_pt_2, adj_pt_2)
+            angle1 = subpoly.angles[edge_pt_1]
+            angle2 = subpoly.angles[edge_pt_2]
+
+            # we need to first make sure that the sum of the interior angles the edge
+            # makes with the two adjacent edges is more than 180°
+            if sympy.N(angle1 + angle2) <= sympy.pi:
+                continue
+
+            # find the new vertex if we delete this edge
+            adj_edge_1 = sympy.Line(adj_pt_1, edge_pt_1)
+            adj_edge_2 = sympy.Line(edge_pt_2, adj_pt_2)
+            intersect = adj_edge_1.intersection(adj_edge_2)[0]
+
+            # the area of the triangle we'll be adding
+            area = sympy.N(sympy.Triangle(edge_pt_1, intersect, edge_pt_2).area)
+            # should be the lowest
+            if best_candidate and best_candidate[1] < area:
+                continue
+
+            # delete the edge and add the intersection of adjacent edges to the hull
+            better_hull = list(hull)
+            better_hull[edge_idx_1] = intersect
+            del better_hull[edge_idx_2]
+            best_candidate = (better_hull, area)
+
+        if not best_candidate:
+            raise ValueError("Could not find the best fit n-gon!")
+
+        hull = best_candidate[0]
+
+    hull = [(int(x), int(y)) for x, y in hull]
+    hull = np.array(hull, dtype=np.float32)
+
+    return hull
 
 
 def get_best_detections_per_class(
