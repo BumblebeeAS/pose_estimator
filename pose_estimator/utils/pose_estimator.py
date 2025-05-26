@@ -9,7 +9,7 @@ def get_object_pose(
     object_points: np.ndarray,
     image_points: np.ndarray,
     max_reprojection_error: float = 2.0,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Get the object pose from the camera and point correspondences.
 
     Args:
@@ -19,24 +19,17 @@ def get_object_pose(
         max_reprojection_error (float): Maximum reprojection error for RANSAC.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]: (R, t)
+        tuple[np.ndarray, np.ndarray, np.ndarray]: (R, t, inliers)
 
     Raises:
         ValueError: If the number of object points is less than 4.
-        ValueError: If no inliers are found.
-        Exception: If cv2.solvePnPRansac or cv2.solvePnPRefineLM fails.
+        Exception: If cv2.solvePnPRansac fails.
     """
     # TODO: Account for equidistant distortion
-    # TODO: For the planar case, init cv2.solvePnPRefineLM directly with homography
     if len(object_points) < 4:
         raise ValueError(
             f"At least 4 points needed to estimate pose, only {len(object_points)} given"
         )
-
-    # This step gives a rough estimate of the pose for solvePnPRefineLM and
-    # allows for quick termination if no inliers are found. This is useful
-    # when there are few point correspondences and homography estimation
-    # cannot determine if the points are inliers or not.
 
     # RANSAC accounts for outliers
     # A small max reprojection error is used to get a good pose estimate
@@ -51,15 +44,37 @@ def get_object_pose(
         flags=cv2.SOLVEPNP_SQPNP,
     )
 
-    if inliers is None:
-        raise ValueError("No inliers found")
+    return rvec, tvec, inliers
 
+
+def refine_object_pose(
+    camera: PinholeCamera,
+    object_points: np.ndarray,
+    image_points: np.ndarray,
+    rvec: np.ndarray,
+    tvec: np.ndarray,
+    term_eps: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Refine the object pose using the initial pose estimate.
+
+    Args:
+        camera (PinholeCamera): Camera object.
+        object_points (np.ndarray): N x 3 array of object points.
+        image_points (np.ndarray): N x 2 array of image points.
+        rvec (np.ndarray): Initial rotation vector.
+        tvec (np.ndarray): Initial translation vector.
+        term_eps (float): Maximum error for refinement.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Refined rotation and translation vectors.
+
+    Raises:
+        Exception: If cv2.solvePnPRefineVVS fails.
+    """
+    # TODO: For the planar case, init cv2.solvePnPRefineLM directly with homography
     # TODO: Split into planar and non-planar cases.
-    # Case 1: Object points are non-planar.
-    # Use only the inliers from RANSAC as homography estimation does not apply.
-    # Case 2: Use all points for the planar case.
-    # Homography estimation filters well. RANSAC filtering is too strict, resulting
-    # in too few point correspondences and a noisy pose estimate.
+    # TODO: Uncomment the following lines to use refineVVS after filtering outliers.
+    # TODO: See if refinement even helps.
     rvec, tvec = cv2.solvePnPRefineVVS(
         object_points,
         image_points,
@@ -67,7 +82,7 @@ def get_object_pose(
         camera.dist_coeffs(),
         rvec,
         tvec,
-        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 1000, 1e-6),
+        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 1000, term_eps),
     )
 
     return rvec, tvec

@@ -94,11 +94,16 @@ class GatePoseEstimator(Node):
         ), "Number of object points and image points must match"
 
         try:
-            rvec, tvec = get_object_pose(
+            rvec, tvec, inliers = get_object_pose(
                 self.camera, object_points, image_points, max_reprojection_error=100
             )
+
+            if inliers is None:
+                raise ValueError("No inliers found during pose estimation.")
+
             R, _ = cv2.Rodrigues(rvec)
             t = tvec.squeeze()
+
         except Exception as e:
             self.get_logger().warn(f"Pose estimation failed: {e}")
             return

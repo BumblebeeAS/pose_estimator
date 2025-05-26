@@ -23,6 +23,7 @@ from pose_estimator.utils.pose_estimator import (
     estimate_covariance,
     filter_by_homography,
     get_object_pose,
+    refine_object_pose,
 )
 
 
@@ -71,9 +72,25 @@ class SimplePoseEstimator(Node):
         object_points, image_points = filter_by_homography(object_points, image_points)
 
         try:
-            rvec, tvec = get_object_pose(self.camera, object_points, image_points)
+            # This step gives a rough estimate of the pose for solvePnPRefineLM and
+            # allows for quick termination if no inliers are found. This is useful
+            # when there are few point correspondences and homography estimation
+            # cannot determine if the points are inliers or not.
+
+            rvec, tvec, inliers = get_object_pose(
+                self.camera, object_points, image_points
+            )
+
+            if inliers is None:
+                raise ValueError("No inliers found during pose estimation.")
+
+            rvec, tvec = refine_object_pose(
+                self.camera, object_points, image_points, rvec, tvec
+            )
+
             R, _ = cv2.Rodrigues(rvec)
             t = tvec.squeeze()
+
         except Exception as e:
             self.get_logger().warn(f"Pose estimation failed: {e}")
             return
