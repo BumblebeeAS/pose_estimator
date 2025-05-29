@@ -33,16 +33,14 @@ _object_points_mm_dict = {
 }
 OBJECT_POINTS_DICT = {}
 for key, object_points_mm in _object_points_mm_dict.items():
-    object_points_2d = np.array(object_points_mm, dtype=np.float32) / 1000.0
-    object_points = np.hstack(
-        [object_points_2d, np.zeros((object_points_2d.shape[0], 1))]
-    )
+    object_points = np.array(object_points_mm, dtype=np.float32) / 1000.0
     OBJECT_POINTS_DICT[key] = np.array(object_points, dtype=np.float32)
 
 BIN_OBJECT_POINTS = np.array(
     [(0, 0), (0, 609.60), (304.80, 609.60), (304.80, 0)],
     dtype=np.float32,
 )
+BIN_OBJECT_POINTS = BIN_OBJECT_POINTS / 1000.0
 
 
 def order_points_clockwise(pts: ArrayLike) -> np.ndarray:

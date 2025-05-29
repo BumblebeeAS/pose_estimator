@@ -91,6 +91,9 @@ class GatePoseEstimator(Node):
         object_points, image_points = match_polygon_points_sequence(
             polygon_objects, detected_polygons
         )
+        object_points = np.hstack(
+            [object_points, np.zeros((object_points.shape[0], 1))]
+        )
 
         assert (
             object_points.shape[0] == image_points.shape[0]
