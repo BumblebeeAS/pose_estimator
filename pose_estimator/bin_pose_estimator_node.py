@@ -34,7 +34,7 @@ class BinPoseEstimator(Node):
         super().__init__("gate_pose_estimator_node")
         self.bridge = CvBridge()
 
-        self.declare_parameter("object_frame_id", "wesley_please_come_lab")
+        self.declare_parameter("object_frame_id", "auv4/bin")
         self.declare_parameter("camera_info_topic", "camera_info")
         self.declare_parameter("detections_topic", "yolo/detections")
 
@@ -77,25 +77,30 @@ class BinPoseEstimator(Node):
             return
 
         for class_name, detection in best_detections.items():
-            curr_object_points = BIN_OBJECT_POINTS[class_name]
+            curr_object_points = BIN_OBJECT_POINTS
             object_points.extend(curr_object_points)
 
             mask = detection.mask
             mask_points = [attrgetter("x", "y")(point) for point in mask.data]
 
             try:
-                ngon_coords_array = get_best_fit_ngon(mask_points)
+                ngon_coords_array = get_best_fit_ngon(np.array(mask_points, dtype=np.int32))
             except ValueError as e:
                 self.get_logger().warn(
                     f"Failed to get best fit ngon: {e}, using OBB instead"
                 )
-                ngon_coords_array = polygon_to_obb(mask_points)
+                ngon_coords_array = polygon_to_obb(np.array(mask_points))
 
             curr_image_points = get_normalized_coords_array(ngon_coords_array)
 
             image_points.extend(curr_image_points)
 
         object_points = np.array(object_points)
+
+        object_points = np.hstack(
+            [object_points, np.zeros((object_points.shape[0], 1))]
+        )
+
         image_points = np.array(image_points)
 
         assert (
@@ -103,7 +108,7 @@ class BinPoseEstimator(Node):
         ), "Number of object points and image points must match"
 
         try:
-            rvec, tvec = get_object_pose(
+            rvec, tvec, inliers = get_object_pose(
                 self.camera, object_points, image_points, max_reprojection_error=100
             )
             R, _ = cv2.Rodrigues(rvec)

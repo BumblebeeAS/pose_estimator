@@ -32,6 +32,7 @@ setup(
         "console_scripts": [
             "simple_pose_estimator_node = pose_estimator.simple_pose_estimator_node:main",
             "gate_pose_estimator_node = pose_estimator.gate_pose_estimator_node:main",
+            "bin_pose_estimator_node = pose_estimator.bin_pose_estimator_node:main",
         ],
     },
 )
