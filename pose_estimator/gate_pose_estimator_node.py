@@ -1,5 +1,3 @@
-from operator import attrgetter
-
 import cv2
 import numpy as np
 import rclpy
@@ -21,9 +19,10 @@ from yolo_msgs.msg import DetectionArray
 
 from pose_estimator.utils.detections import (
     OBJECT_POINTS_DICT,
+    filter_detections_by_num_points,
     get_best_detections_per_class,
-    get_normalized_coords_array,
-    polygon_to_obb,
+    get_detection_obb,
+    match_polygon_points_sequence,
 )
 from pose_estimator.utils.PinholeCamera import PinholeCamera
 from pose_estimator.utils.pose_estimator import estimate_covariance, get_object_pose
@@ -65,31 +64,33 @@ class GatePoseEstimator(Node):
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
     def detections_callback(self, msg: DetectionArray):
+        # We require at least 3 points for polygon creation
+        filtered_detections = filter_detections_by_num_points(msg, 3)
+
+        # Only include relevant classes
+        relevant_classes = ["gate_sides_left", "gate_sides_right", "gate_center"]
         required_objects = 2
-        image_points, object_points = [], []
 
         best_detections = get_best_detections_per_class(
-            msg, ["gate_sides_left", "gate_sides_right", "gate_center"]
+            filtered_detections, relevant_classes
         )
         num_detected_objects = len(best_detections.keys())
         if num_detected_objects < required_objects:
             self.get_logger().warn(
-                f"Insufficient detected objects. Received: {num_detected_objects}, require: {required_objects}."
+                f"""Insufficient detected objects.
+                Received: {num_detected_objects}, require: {required_objects}."""
             )
             return
 
-        for class_name, detection in best_detections.items():
-            curr_object_points = OBJECT_POINTS_DICT[class_name]
-            object_points.extend(curr_object_points)
-
-            mask = detection.mask
-            mask_points = [attrgetter("x", "y")(point) for point in mask.data]
-            mask_obb = polygon_to_obb(mask_points)
-            curr_image_points = get_normalized_coords_array(mask_obb)
-            image_points.extend(curr_image_points)
-
-        object_points = np.array(object_points)
-        image_points = np.array(image_points)
+        # Match image points and object points
+        detections = list(best_detections.values())
+        polygon_objects = [
+            OBJECT_POINTS_DICT[detection.class_name] for detection in detections
+        ]
+        detected_polygons = list(map(get_detection_obb, detections))
+        object_points, image_points = match_polygon_points_sequence(
+            polygon_objects, detected_polygons
+        )
 
         assert (
             object_points.shape[0] == image_points.shape[0]

@@ -1,9 +1,11 @@
-from typing import Dict, List, Sequence
+from operator import attrgetter
+from typing import Dict, List, Sequence, Tuple
 
 import cv2
 import numpy as np
 import shapely
 import sympy
+from numpy.typing import ArrayLike
 from yolo_msgs.msg import Detection, DetectionArray
 
 _object_points_mm_dict = {
@@ -38,6 +40,107 @@ BIN_OBJECT_POINTS = np.array(
     [(0, 0), (0, 609.60), (304.80, 609.60), (304.80, 0)],
     dtype=np.float32,
 )
+
+
+def order_points_clockwise(pts: ArrayLike) -> np.ndarray:
+    """Order points in a clockwise manner starting from the
+    point with the smallest angle.
+
+    Args:
+        pts (ArrayLike): Exterior points of a polygon.
+
+    Returns:
+        np.ndarray: Exterior points of the polygon ordered in a clockwise
+        manner.
+    """
+    pts = np.array(pts)
+    centroid = pts.mean(axis=0)
+    angles = np.arctan2(pts[:, 1] - centroid[1], pts[:, 0] - centroid[0])
+    return pts[np.argsort(angles)]
+
+
+def normalize_polygon(pts: ArrayLike) -> np.ndarray:
+    """Translate the polygon's centroid to the origin and scale the polygon so
+    that the average distance from the centroid to the points is 1. This operation
+    preserves the aspect ratio of the polygon.
+
+    Args:
+        pts (ArrayLike): Exterior points of a polygon.
+
+    Raises:
+        ValueError: If the average distance from the centroid to the points is zero.
+
+    Returns:
+        np.ndarray: Normalized polygon.
+    """
+    pts = np.array(pts).copy()
+    centroid = np.mean(pts, axis=0)
+    pts -= centroid
+    avg_distance = np.mean(np.linalg.norm(pts, axis=1))
+
+    if avg_distance == 0:
+        raise ValueError("Cannot normalize a polygon with zero average distance.")
+
+    pts /= avg_distance
+    return pts
+
+
+def match_polygon_points(A: ArrayLike, B: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
+    """Match two polygons by ordering their points in a clockwise manner and
+    finding the best rotation of B that minimizes the distance to A.
+
+    Args:
+        A (ArrayLike): Points of a polygon to match against.
+        B (ArrayLike): Points of a polygon to be matched.
+
+    Raises:
+        AssertionError: If the number of points in A and B are not equal.
+        ValueError: If the average distance from the centroid to the any set
+        of points is zero.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Pairs of ordered points from A and B
+        that minimize the distance between them.
+    """
+    assert len(A) == len(B), "Polygons must have the same number of points."
+
+    A_ordered = order_points_clockwise(A)
+    B_ordered = order_points_clockwise(B)
+
+    # Try all permutations of B and find the one that matches A the best
+    # by minimizing the sum of squared distances between corresponding points.
+    A_norm = normalize_polygon(A_ordered)
+    B_norm = normalize_polygon(B_ordered)
+
+    min_cost = float("inf")
+    best_permutation = np.arange(len(B))
+    for i in range(len(A)):
+        permutation = np.roll(best_permutation, i, axis=0)
+        cost = np.sum(np.linalg.norm(A_norm - B_norm[permutation], axis=1) ** 2)
+        if cost < min_cost:
+            min_cost = cost
+            best_permutation = permutation
+
+    return A_ordered, B_ordered[best_permutation]
+
+
+def match_polygon_points_sequence(
+    polygons_A: Sequence[ArrayLike],
+    polygons_B: Sequence[ArrayLike],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Vectorized version of `match_polygon_points` for matching multiple
+    polygons."""
+    matched_A, matched_B = [], []
+
+    for A, B in zip(polygons_A, polygons_B):
+        A, B = match_polygon_points(A, B)
+
+        matched_A.extend(A)
+        matched_B.extend(B)
+
+    matched_A = np.array(matched_A)
+    matched_B = np.array(matched_B)
+    return matched_A, matched_B
 
 
 def get_normalized_coords_array(polygon: shapely.Polygon | Sequence) -> np.ndarray:
@@ -151,6 +254,29 @@ def get_best_fit_ngon(points: np.ndarray, n: int = 4) -> np.ndarray:
     return hull
 
 
+def filter_detections_by_num_points(
+    detection_array_msg: DetectionArray, min_num_points: int
+) -> DetectionArray:
+    """Filters detections based on the number of points in their masks.
+
+    Args:
+        detection_array_msg (DetectionArray): Array of Detections.
+        min_num_points (int): Minimum number of points required in the mask.
+
+    Returns:
+        DetectionArray: Filtered array of detections.
+    """
+    filtered_detections = [
+        detection
+        for detection in detection_array_msg.detections
+        if len(detection.mask.data) >= min_num_points
+    ]
+    filtered_detections_msg = DetectionArray(
+        header=detection_array_msg.header, detections=filtered_detections
+    )
+    return filtered_detections_msg
+
+
 def get_best_detections_per_class(
     detection_array_msg: DetectionArray, classes: List[str]
 ) -> Dict[str, Detection]:
@@ -166,7 +292,6 @@ def get_best_detections_per_class(
     Returns:
         Dict[str, Detection]: Dictionary of detections with class names as key.
     """
-
     best_detections = {}
     best_scores = {}
     classes = set(classes)
@@ -177,3 +302,11 @@ def get_best_detections_per_class(
             best_scores[class_name] = score
             best_detections[class_name] = detection
     return best_detections
+
+
+def get_detection_obb(detection: Detection) -> np.ndarray:
+    mask = detection.mask
+    mask_points = [attrgetter("x", "y")(point) for point in mask.data]
+    mask_obb = polygon_to_obb(mask_points)
+    obb_points = np.array(mask_obb.exterior.coords[:-1])
+    return obb_points
