@@ -6,6 +6,9 @@ import shapely
 import sympy
 from yolo_msgs.msg import Detection, DetectionArray
 
+# Order: top-left, bottom-left, bottom-right, top-right
+# x-coordinates increase rightwards, y-coordinates increase downwards.
+# Origin at the top-left corner of the gate.
 _object_points_mm_dict = {
     "gate_sides_left": [
         (0, 152.40),
