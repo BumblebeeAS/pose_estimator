@@ -147,7 +147,16 @@ class BinPoseEstimator(Node):
         transform_stamped.header = msg.header
         transform_stamped.child_frame_id = self.object_frame_id
         transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
-        transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
+
+        # Apply a 180-degree rotation around the x-axis
+        # TODO: Find out why this is needed
+        q_rot_x_180 = tf_transformations.quaternion_from_euler(np.pi, 0, 0)
+        q_combined = tf_transformations.quaternion_multiply(
+            q_rot_x_180, [qx, qy, qz, qw]
+        )
+        transform_stamped.transform.rotation = Quaternion(
+            x=q_combined[0], y=q_combined[1], z=q_combined[2], w=q_combined[3]
+        )
 
         self.tf_broadcaster.sendTransform(transform_stamped)
 
