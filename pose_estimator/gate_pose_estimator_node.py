@@ -4,13 +4,7 @@ import rclpy
 import tf2_ros
 import tf_transformations
 from cv_bridge import CvBridge
-from geometry_msgs.msg import (
-    Point,
-    PoseWithCovarianceStamped,
-    Quaternion,
-    TransformStamped,
-    Vector3,
-)
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.node import Node
 from rclpy.wait_for_message import wait_for_message
 from sensor_msgs.msg import CameraInfo
@@ -26,6 +20,10 @@ from pose_estimator.utils.detections import (
 )
 from pose_estimator.utils.PinholeCamera import PinholeCamera
 from pose_estimator.utils.pose_estimator import estimate_covariance, get_object_pose
+from pose_estimator.utils.ros_messages import (
+    get_pose_with_covariance_stamped,
+    get_transform_stamped,
+)
 
 
 class GatePoseEstimator(Node):
@@ -127,34 +125,24 @@ class GatePoseEstimator(Node):
         # )
 
         try:
-            qx, qy, qz, qw = mat2quat(R)
+            q = mat2quat(R)
         except np.linalg.LinAlgError as e:
             self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
             return
 
-        pose = PoseWithCovarianceStamped()
-        pose.header = msg.header
-        pose.header.frame_id = self.camera_frame_id
-        pose.pose.pose.position = Point(x=t[0], y=t[1], z=t[2])
-        pose.pose.pose.orientation = Quaternion(x=qx, y=qy, z=qz, w=qw)
-        pose.pose.covariance = covariance.flatten().tolist()
-        self.pose_publisher.publish(pose)
-
-        transform_stamped = TransformStamped()
-        transform_stamped.header = msg.header
-        transform_stamped.child_frame_id = self.object_frame_id
-        transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
-
         # Apply a 180-degree rotation around the x-axis
         # TODO: Find out why this is needed
         q_rot_x_180 = tf_transformations.quaternion_from_euler(np.pi, 0, 0)
-        q_combined = tf_transformations.quaternion_multiply(
-            q_rot_x_180, [qx, qy, qz, qw]
-        )
-        transform_stamped.transform.rotation = Quaternion(
-            x=q_combined[0], y=q_combined[1], z=q_combined[2], w=q_combined[3]
-        )
+        q_rotated = tf_transformations.quaternion_multiply(q_rot_x_180, q)
 
+        pose = get_pose_with_covariance_stamped(
+            msg.header, t, q_rotated, covariance.flatten().tolist()
+        )
+        self.pose_publisher.publish(pose)
+
+        transform_stamped = get_transform_stamped(
+            msg.header, self.object_frame_id, t, q_rotated
+        )
         self.tf_broadcaster.sendTransform(transform_stamped)
 
 
