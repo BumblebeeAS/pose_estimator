@@ -33,7 +33,7 @@ class BinPoseEstimator(Node):
         super().__init__("gate_pose_estimator_node")
         self.bridge = CvBridge()
 
-        self.declare_parameter("object_frame_id", "auv4/bin")
+        self.declare_parameter("object_frame_id", "bin/yolo")
         self.declare_parameter("camera_info_topic", "camera_info")
         self.declare_parameter("detections_topic", "yolo/detections")
 
@@ -59,7 +59,7 @@ class BinPoseEstimator(Node):
             DetectionArray, detections_topic, self.detections_callback, 1
         )
         self.pose_publisher = self.create_publisher(
-            PoseWithCovarianceStamped, "/auv4/bin/pose", 10
+            PoseWithCovarianceStamped, "/auv4/bin/yolo/pose", 10
         )
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
@@ -104,9 +104,9 @@ class BinPoseEstimator(Node):
 
         image_points = np.array(image_points)
 
-        assert (
-            object_points.shape[0] == image_points.shape[0]
-        ), "Number of object points and image points must match"
+        assert object_points.shape[0] == image_points.shape[0], (
+            "Number of object points and image points must match"
+        )
 
         try:
             rvec, tvec, inliers = get_object_pose(

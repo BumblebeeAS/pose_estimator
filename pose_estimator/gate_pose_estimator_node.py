@@ -31,7 +31,7 @@ class GatePoseEstimator(Node):
         super().__init__("gate_pose_estimator_node")
         self.bridge = CvBridge()
 
-        self.declare_parameter("object_frame_id", "wesley_please_come_lab")
+        self.declare_parameter("object_frame_id", "gate")
         self.declare_parameter("camera_info_topic", "camera_info")
         self.declare_parameter("detections_topic", "yolo/detections")
 
@@ -93,9 +93,9 @@ class GatePoseEstimator(Node):
             [object_points, np.zeros((object_points.shape[0], 1))]
         )
 
-        assert (
-            object_points.shape[0] == image_points.shape[0]
-        ), "Number of object points and image points must match"
+        assert object_points.shape[0] == image_points.shape[0], (
+            "Number of object points and image points must match"
+        )
 
         try:
             rvec, tvec, inliers = get_object_pose(
