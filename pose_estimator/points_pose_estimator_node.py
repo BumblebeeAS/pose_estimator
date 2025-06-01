@@ -4,14 +4,9 @@ import cv2
 import numpy as np
 import rclpy
 import tf2_ros
+import tf_transformations
 from bb_perception_msgs.msg import PointCorrespondencesStamped
-from geometry_msgs.msg import (
-    Point,
-    PoseWithCovarianceStamped,
-    Quaternion,
-    TransformStamped,
-    Vector3,
-)
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.node import Node
 from rclpy.wait_for_message import wait_for_message
 from sensor_msgs.msg import CameraInfo
@@ -25,40 +20,54 @@ from pose_estimator.utils.pose_estimator import (
     get_object_pose,
     refine_object_pose,
 )
+from pose_estimator.utils.ros_messages import (
+    get_pose_with_covariance_stamped,
+    get_transform_stamped,
+)
 
 
-class SimplePoseEstimator(Node):
+class PointsPoseEstimator(Node):
 
     def __init__(self):
-        super().__init__("pose_estimator")
+        super().__init__("points_pose_estimator")
 
-        self.declare_parameter("camera_info_topic", "camera_info")
         camera_info_topic = (
-            self.get_parameter("camera_info_topic").get_parameter_value().string_value
+            self.declare_parameter("camera_info_topic", "camera_info")
+            .get_parameter_value()
+            .string_value
         )
+        input_points_topic = (
+            self.declare_parameter("input_points_topic", "point_correspondences")
+            .get_parameter_value()
+            .string_value
+        )
+        output_pose_topic = (
+            self.declare_parameter("output_pose_topic", "pose")
+            .get_parameter_value()
+            .string_value
+        )
+
         valid, camera_info = wait_for_message(CameraInfo, self, camera_info_topic)
         if not valid:
             raise ValueError("Failed to get camera info")
         else:
             camera_info: CameraInfo
             self.camera = PinholeCamera.from_camera_info(camera_info, rectified=False)
-            self.camera_frame_id = camera_info.header.frame_id
 
-        self.br = tf2_ros.TransformBroadcaster(self)
+        self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         self.point_subscriber = self.create_subscription(
             PointCorrespondencesStamped,
-            "image_matching/point_correspondences",
+            input_points_topic,
             self.point_correspondences_callback,
             1,
         )
 
         self.pose_publisher = self.create_publisher(
-            PoseWithCovarianceStamped, "image_matching/pose", 1
+            PoseWithCovarianceStamped, output_pose_topic, 1
         )
 
     def point_correspondences_callback(self, msg: PointCorrespondencesStamped):
-        # TODO: Filter using clustering or Kalman
         object_points = to_numpy_f64(msg.object_points)
         image_points = to_numpy_f64(msg.image_points)
 
@@ -112,33 +121,31 @@ class SimplePoseEstimator(Node):
         # )
 
         try:
-            qx, qy, qz, qw = mat2quat(R)
+            q = mat2quat(R)
         except np.linalg.LinAlgError as e:
             self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
             return
 
-        pose = PoseWithCovarianceStamped()
-        pose.header = msg.header
-        pose.header.frame_id = self.camera_frame_id
-        pose.pose.pose.position = Point(x=t[0], y=t[1], z=t[2])
-        pose.pose.pose.orientation = Quaternion(x=qx, y=qy, z=qz, w=qw)
-        pose.pose.covariance = covariance.flatten().tolist()
+        # Apply a 180-degree rotation around the x-axis
+        # TODO: Find out why this is needed
+        q_rot_x_180 = tf_transformations.quaternion_from_euler(np.pi, 0, 0)
+        q_rotated = tf_transformations.quaternion_multiply(q_rot_x_180, q)
 
+        pose = get_pose_with_covariance_stamped(
+            msg.header, t, q_rotated, covariance.flatten().tolist()
+        )
         self.pose_publisher.publish(pose)
 
-        transform_stamped = TransformStamped()
-        transform_stamped.header = msg.header
-        transform_stamped.child_frame_id = msg.object_frame_id
-        transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
-        transform_stamped.transform.rotation = Quaternion(x=qx, y=qy, z=qz, w=qw)
-
-        self.br.sendTransform(transform_stamped)
+        transform_stamped = get_transform_stamped(
+            msg.header, msg.object_frame_id, t, q_rotated
+        )
+        self.tf_broadcaster.sendTransform(transform_stamped)
 
 
 def main(args=None):
     logging.basicConfig(level=logging.INFO)
     rclpy.init(args=args)
-    node = SimplePoseEstimator()
+    node = PointsPoseEstimator()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
