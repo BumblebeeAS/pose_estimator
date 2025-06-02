@@ -24,7 +24,7 @@ class GatePoseEstimator(PoseEstimatorNode):
             .string_value
         )
         detections_topic = (
-            self.declare_parameter("detections_topic", "yolo/detections")
+            self.declare_parameter("input_detections_topic", "yolo/detections")
             .get_parameter_value()
             .string_value
         )
@@ -77,6 +77,7 @@ class GatePoseEstimator(PoseEstimatorNode):
             # the matched points for one detection may be at an offset from the matched points
             # for another. Setting a lower max re-projection error may result in a more confident
             # pose estimator, but it may also result in no inliers being found.
+
             rvec, tvec, inliers = get_object_pose(
                 self.camera, object_points, image_points, max_reprojection_error=100
             )

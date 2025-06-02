@@ -45,7 +45,7 @@ class BinPoseEstimator(PoseEstimatorNode):
             .string_value
         )
         detections_topic = (
-            self.declare_parameter("detections_topic", "yolo/detections")
+            self.declare_parameter("input_detections_topic", "yolo/detections")
             .get_parameter_value()
             .string_value
         )
@@ -98,6 +98,7 @@ class BinPoseEstimator(PoseEstimatorNode):
         try:
             # We can set a low max re-projection error and refine pose even though
             # the segmentation mask is noisy because we only have 4 points
+
             rvec, tvec, inliers = get_object_pose(
                 self.camera, object_points, image_points
             )
