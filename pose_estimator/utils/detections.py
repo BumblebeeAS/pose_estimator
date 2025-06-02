@@ -177,9 +177,16 @@ def polygon_to_obb(points: np.ndarray) -> shapely.Polygon:
     Args:
         points (np.ndarray): N x 2 array of points representing the polygon.
 
+    Raises:
+        ValueError: If there are fewer than 3 points.
+
     Returns:
         shapely.Polygon: Oriented bounding box of the polygon.
     """
+    # This is required to initialize a shapely polygon
+    if len(points) < 3:
+        raise ValueError("At least 3 points are required to compute an OBB.")
+
     polygon = shapely.Polygon(points)
     min_area_rect = polygon.minimum_rotated_rectangle
 
