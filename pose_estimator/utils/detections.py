@@ -3,7 +3,6 @@ from typing import Dict, List, Sequence, Tuple
 
 import cv2
 import numpy as np
-import shapely
 import sympy
 from numpy.typing import ArrayLike
 from yolo_msgs.msg import Detection, DetectionArray
@@ -89,13 +88,42 @@ def normalize_polygon(pts: ArrayLike) -> np.ndarray:
     return pts
 
 
-def match_polygon_points(A: ArrayLike, B: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
+def rotate_polygon(pts: ArrayLike, angle: float) -> np.ndarray:
+    """Rotate a polygon by a given angle around its centroid.
+
+    Args:
+        pts (ArrayLike): Exterior points of a polygon.
+        angle (float): Angle in degrees to rotate the polygon anti-clockwise.
+
+    Returns:
+        np.ndarray: Rotated polygon.
+    """
+    pts = np.array(pts, dtype=np.float64).copy()
+    centroid = np.mean(pts, axis=0)
+    angle = np.deg2rad(angle)
+    rotation_matrix = np.array(
+        [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
+    )
+    pts -= centroid
+    pts = pts @ rotation_matrix.T
+    pts += centroid
+    return pts
+
+
+def match_polygon_points(
+    A: ArrayLike, B: ArrayLike, A_angle: float = 0, B_angle: float = 0
+) -> Tuple[np.ndarray, np.ndarray]:
     """Match two polygons by ordering their points in a clockwise manner and
-    finding the best rotation of B that minimizes the distance to A.
+    finding the best order of points of B that minimizes the normalized
+    distance to A.
 
     Args:
         A (ArrayLike): Points of a polygon to match against.
         B (ArrayLike): Points of a polygon to be matched.
+        A_angle (float, optional): Angle in degrees to rotate A anti-clockwise
+        about its centroid before matching. Defaults to 0.
+        B_angle (float, optional): Angle in degrees to rotate B anti-clockwise
+        about its centroid before matching. Defaults to 0.
 
     Raises:
         AssertionError: If the number of points in A and B are not equal.
@@ -111,16 +139,20 @@ def match_polygon_points(A: ArrayLike, B: ArrayLike) -> Tuple[np.ndarray, np.nda
     A_ordered = order_points_clockwise(A)
     B_ordered = order_points_clockwise(B)
 
-    # Try all permutations of B and find the one that matches A the best
-    # by minimizing the sum of squared distances between corresponding points.
     A_norm = normalize_polygon(A_ordered)
     B_norm = normalize_polygon(B_ordered)
 
+    A_rotated = rotate_polygon(A_norm, A_angle)
+    B_rotated = rotate_polygon(B_norm, B_angle)
+
+    # Try all permutations of B and find the one that matches A the best
+    # by minimizing the sum of squared distances between corresponding points.
     min_cost = float("inf")
     best_permutation = np.arange(len(B))
+    identity_permutation = np.arange(len(B))
     for i in range(len(A)):
-        permutation = np.roll(best_permutation, i, axis=0)
-        cost = np.sum(np.linalg.norm(A_norm - B_norm[permutation], axis=1) ** 2)
+        permutation = np.roll(identity_permutation, i, axis=0)
+        cost = np.sum(np.linalg.norm(A_rotated - B_rotated[permutation], axis=1) ** 2)
         if cost < min_cost:
             min_cost = cost
             best_permutation = permutation
@@ -147,9 +179,10 @@ def match_polygon_points_sequence(
     return matched_A, matched_B
 
 
-def polygon_to_obb(points: np.ndarray) -> shapely.Polygon:
+def polygon_to_obb(points: ArrayLike) -> Tuple[float, np.ndarray]:
     """Compute the Oriented Bounding Box (OBB) from a NumPy coordinate array
-    of a polygon.
+    of a polygon. The angle returned is between the longer edge of the rectangle
+    and the vertical, in the range (0, 180], increasing anti-clockwise.
 
     Args:
         points (np.ndarray): N x 2 array of points representing the polygon.
@@ -158,16 +191,30 @@ def polygon_to_obb(points: np.ndarray) -> shapely.Polygon:
         ValueError: If there are fewer than 3 points.
 
     Returns:
-        shapely.Polygon: Oriented bounding box of the polygon.
+        Tuple[float, np.ndarray]: Angle in degrees and OBB points.
     """
-    # This is required to initialize a shapely polygon
     if len(points) < 3:
         raise ValueError("At least 3 points are required to compute an OBB.")
 
-    polygon = shapely.Polygon(points)
-    min_area_rect = polygon.minimum_rotated_rectangle
+    points = np.array(points, dtype=np.float32)
+    rect = cv2.minAreaRect(points)
+    _, (width, height), angle = rect
+    box_points = cv2.boxPoints(rect)
 
-    return min_area_rect
+    # NOTE: OpenCV’s angle can be confusing and the conventions differ between
+    # OpenCV versions.
+
+    # The following returns the angle between the longer edge of the rectangle
+    # and the vertical, in the range (0, 180], increasing anti-clockwise.
+    # Tested for OpenCV 4.10 and 4.11, MAY break for OpenCV 4.12+.
+    # See: https://docs.opencv.org/4.x/d3/dc0/group__imgproc__shape.html#ga3d476a3417130ae5154aea421ca7ead9
+
+    if width < height:
+        corrected_angle = angle
+    else:
+        corrected_angle = angle + 90
+
+    return corrected_angle, box_points
 
 
 # Source: https://stackoverflow.com/a/74620309
@@ -292,9 +339,8 @@ def get_best_detections_per_class(
     return best_detections
 
 
-def get_detection_obb(detection: Detection) -> np.ndarray:
+def get_detection_obb(detection: Detection) -> Tuple[float, np.ndarray]:
     mask = detection.mask
     mask_points = [attrgetter("x", "y")(point) for point in mask.data]
-    mask_obb = polygon_to_obb(mask_points)
-    obb_points = np.array(mask_obb.exterior.coords[:-1])
-    return obb_points
+    angle, obb_points = polygon_to_obb(mask_points)
+    return angle, obb_points

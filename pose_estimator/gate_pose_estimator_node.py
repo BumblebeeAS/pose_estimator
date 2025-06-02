@@ -60,7 +60,7 @@ class GatePoseEstimator(PoseEstimatorNode):
         polygon_objects = [
             OBJECT_POINTS_DICT[detection.class_name] for detection in detections
         ]
-        detected_polygons = list(map(get_detection_obb, detections))
+        detected_polygons = list(map(lambda det: get_detection_obb(det)[1], detections))
         object_points, image_points = match_polygon_points_sequence(
             polygon_objects, detected_polygons
         )

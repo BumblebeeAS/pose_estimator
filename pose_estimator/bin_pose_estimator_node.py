@@ -12,7 +12,7 @@ from pose_estimator.utils.detections import (
     get_best_detections_per_class,
     get_best_fit_ngon,
     get_detection_obb,
-    match_polygon_points_sequence,
+    match_polygon_points,
     polygon_to_obb,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose, refine_object_pose
@@ -24,13 +24,10 @@ def get_detection_polygon(detection: Detection, logger: RcutilsLogger) -> np.nda
     mask_points = [attrgetter("x", "y")(point) for point in mask.data]
 
     try:
-        # TODO: Make get_best_fit_ngon faster -> currently takes a few seconds
-        raise ValueError("Forcing ngon fit to test error handling")
         polygon_points = get_best_fit_ngon(np.array(mask_points, dtype=np.int32))
     except ValueError as e:
         logger.warn(f"Failed to get best fit ngon: {e}, using OBB instead")
-        polygon_obb = polygon_to_obb(np.array(mask_points))
-        polygon_points = np.array(polygon_obb.exterior.coords[:-1])
+        polygon_points = polygon_to_obb(mask_points)
 
     return polygon_points
 
@@ -77,14 +74,14 @@ class BinPoseEstimator(PoseEstimatorNode):
             return
 
         # Match image points and object points
-        detections = list(best_detections.values())
-        polygon_objects = [BIN_OBJECT_POINTS]
-        # detected_polygons = list(
-        #     map(lambda x: get_detection_polygon(x, self.get_logger()), detections)
-        # )
-        detected_polygons = list(map(get_detection_obb, detections))
-        object_points, image_points = match_polygon_points_sequence(
-            polygon_objects, detected_polygons
+        angle, detected_points = get_detection_obb(best_detections["bin"])
+        # TODO: Make get_best_fit_ngon faster -> currently takes a few seconds
+        # detected_points = get_detection_polygon(best_detections["bin"], self.get_logger())
+
+        # Rotate object points before matching by point distances because bin yaw can
+        # be large and we assume perspective does not change imaged aspect ratio by much.
+        object_points, image_points = match_polygon_points(
+            BIN_OBJECT_POINTS, detected_points, A_angle=angle
         )
 
         object_points = np.hstack(
