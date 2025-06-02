@@ -42,9 +42,13 @@ def test_match_points(image_points: ArrayLike) -> None:
     _, axes = plt.subplots(1, 2, figsize=(8, 4))
     plot_quadrilaterals(axes[0], object_points_2d)
     plot_quadrilaterals(axes[1], matched_object_points_list)
+    axes[0].invert_yaxis()
+    axes[1].invert_yaxis()
     plt.show()
 
     _, axes = plt.subplots(1, 2, figsize=(8, 4))
     plot_quadrilaterals(axes[0], image_points)
     plot_quadrilaterals(axes[1], matched_image_points_list)
+    axes[0].invert_yaxis()
+    axes[1].invert_yaxis()
     plt.show()
