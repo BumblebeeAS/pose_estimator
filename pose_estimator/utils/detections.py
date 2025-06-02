@@ -147,29 +147,6 @@ def match_polygon_points_sequence(
     return matched_A, matched_B
 
 
-def get_normalized_coords_array(polygon: shapely.Polygon | Sequence) -> np.ndarray:
-    """Get the normalized NumPy coordinates array of a polygon in
-    strict canonical form.
-
-    Args:
-        array (shapely.Polygon | Sequence): The polygon to normalize. It can be a
-        shapely.Polygon or a sequence of points (e.g., list of tuples).
-
-    Returns:
-        np.ndarray: Coordinates of the polygon in strict canonical form. The
-        points are ordered anti-clockwise from top-left (because the y-coordinate
-        increases downwards in the image coordinate system).
-    """
-    polygon = shapely.Polygon(polygon)
-    polygon = polygon.normalize()
-
-    # Exclude the the last point as `exterior.coords` repeats the starting point
-    # at the end of the list
-    coords_array = np.array(polygon.exterior.coords[:-1])
-
-    return coords_array
-
-
 def polygon_to_obb(points: np.ndarray) -> shapely.Polygon:
     """Compute the Oriented Bounding Box (OBB) from a NumPy coordinate array
     of a polygon.
