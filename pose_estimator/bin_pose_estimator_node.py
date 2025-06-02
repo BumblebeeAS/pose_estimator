@@ -7,17 +7,18 @@ import tf2_ros
 import tf_transformations
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from rclpy.impl.rcutils_logger import RcutilsLogger
 from rclpy.node import Node
 from rclpy.wait_for_message import wait_for_message
 from sensor_msgs.msg import CameraInfo
 from transforms3d.quaternions import mat2quat
-from yolo_msgs.msg import DetectionArray
+from yolo_msgs.msg import Detection, DetectionArray
 
 from pose_estimator.utils.detections import (
     BIN_OBJECT_POINTS,
     get_best_detections_per_class,
     get_best_fit_ngon,
-    get_normalized_coords_array,
+    match_polygon_points_sequence,
     polygon_to_obb,
 )
 from pose_estimator.utils.PinholeCamera import PinholeCamera
@@ -26,6 +27,20 @@ from pose_estimator.utils.ros_messages import (
     get_pose_with_covariance_stamped,
     get_transform_stamped,
 )
+
+
+def get_detection_polygon(detection: Detection, logger: RcutilsLogger) -> np.ndarray:
+    mask = detection.mask
+    mask_points = [attrgetter("x", "y")(point) for point in mask.data]
+
+    try:
+        polygon_points = get_best_fit_ngon(np.array(mask_points, dtype=np.int32))
+    except ValueError as e:
+        logger.warn(f"Failed to get best fit ngon: {e}, using OBB instead")
+        polygon_obb = polygon_to_obb(np.array(mask_points))
+        polygon_points = np.array(polygon_obb.exterior.coords[:-1])
+
+    return polygon_points
 
 
 class BinPoseEstimator(Node):
@@ -75,38 +90,22 @@ class BinPoseEstimator(Node):
             )
             return
 
-        for class_name, detection in best_detections.items():
-            curr_object_points = BIN_OBJECT_POINTS
-            object_points.extend(curr_object_points)
-
-            mask = detection.mask
-            mask_points = [attrgetter("x", "y")(point) for point in mask.data]
-
-            try:
-                ngon_coords_array = get_best_fit_ngon(
-                    np.array(mask_points, dtype=np.int32)
-                )
-            except ValueError as e:
-                self.get_logger().warn(
-                    f"Failed to get best fit ngon: {e}, using OBB instead"
-                )
-                ngon_coords_array = polygon_to_obb(np.array(mask_points))
-
-            curr_image_points = get_normalized_coords_array(ngon_coords_array)
-
-            image_points.extend(curr_image_points)
-
-        object_points = np.array(object_points)
-
+        # Match image points and object points
+        detections = list(best_detections.values())
+        polygon_objects = [BIN_OBJECT_POINTS]
+        detected_polygons = list(
+            map(lambda x: get_detection_polygon(x, self.get_logger()), detections)
+        )
+        object_points, image_points = match_polygon_points_sequence(
+            polygon_objects, detected_polygons
+        )
         object_points = np.hstack(
             [object_points, np.zeros((object_points.shape[0], 1))]
         )
 
-        image_points = np.array(image_points)
-
-        assert object_points.shape[0] == image_points.shape[0], (
-            "Number of object points and image points must match"
-        )
+        assert (
+            object_points.shape[0] == image_points.shape[0]
+        ), "Number of object points and image points must match"
 
         try:
             rvec, tvec, inliers = get_object_pose(
