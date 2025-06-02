@@ -9,6 +9,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.impl.rcutils_logger import RcutilsLogger
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.wait_for_message import wait_for_message
 from sensor_msgs.msg import CameraInfo
 from transforms3d.quaternions import mat2quat
@@ -18,6 +19,7 @@ from pose_estimator.utils.detections import (
     BIN_OBJECT_POINTS,
     get_best_detections_per_class,
     get_best_fit_ngon,
+    get_detection_obb,
     match_polygon_points_sequence,
     polygon_to_obb,
 )
@@ -34,6 +36,8 @@ def get_detection_polygon(detection: Detection, logger: RcutilsLogger) -> np.nda
     mask_points = [attrgetter("x", "y")(point) for point in mask.data]
 
     try:
+        # TODO: Make get_best_fit_ngon faster -> currently takes a few seconds
+        raise ValueError("Forcing ngon fit to test error handling")
         polygon_points = get_best_fit_ngon(np.array(mask_points, dtype=np.int32))
     except ValueError as e:
         logger.warn(f"Failed to get best fit ngon: {e}, using OBB instead")
@@ -71,10 +75,13 @@ class BinPoseEstimator(Node):
             self.get_parameter("detections_topic").get_parameter_value().string_value
         )
         self.detections_sub = self.create_subscription(
-            DetectionArray, detections_topic, self.detections_callback, 1
+            DetectionArray,
+            detections_topic,
+            self.detections_callback,
+            qos_profile_sensor_data,
         )
         self.pose_publisher = self.create_publisher(
-            PoseWithCovarianceStamped, "/auv4/bin/yolo/pose", 10
+            PoseWithCovarianceStamped, "/auv4/bin/yolo/pose", qos_profile_sensor_data
         )
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
@@ -93,12 +100,18 @@ class BinPoseEstimator(Node):
         # Match image points and object points
         detections = list(best_detections.values())
         polygon_objects = [BIN_OBJECT_POINTS]
-        detected_polygons = list(
-            map(lambda x: get_detection_polygon(x, self.get_logger()), detections)
-        )
+        # detected_polygons = list(
+        #     map(lambda x: get_detection_polygon(x, self.get_logger()), detections)
+        # )
+        detected_polygons = list(map(get_detection_obb, detections))
         object_points, image_points = match_polygon_points_sequence(
             polygon_objects, detected_polygons
         )
+
+        self.get_logger().info(
+            f"Matched {object_points} object points with {image_points} image points"
+        )
+
         object_points = np.hstack(
             [object_points, np.zeros((object_points.shape[0], 1))]
         )
@@ -144,13 +157,19 @@ class BinPoseEstimator(Node):
         q_rot_x_180 = tf_transformations.quaternion_from_euler(np.pi, 0, 0)
         q_rotated = tf_transformations.quaternion_multiply(q_rot_x_180, q)
 
+        # Stabilize -> zero roll and pitch components
+        # We can do this because we defined the object points to follow the
+        # camera frame orientation.
+        euler_rotated = tf_transformations.euler_from_quaternion(q_rotated)
+        q_stabilized = tf_transformations.quaternion_from_euler(0, 0, euler_rotated[2])
+
         pose = get_pose_with_covariance_stamped(
-            msg.header, t, q_rotated, covariance.flatten().tolist()
+            msg.header, t, q_stabilized, covariance.flatten().tolist()
         )
         self.pose_publisher.publish(pose)
 
         transform_stamped = get_transform_stamped(
-            msg.header, self.object_frame_id, t, q_rotated
+            msg.header, self.object_frame_id, t, q_stabilized
         )
         self.tf_broadcaster.sendTransform(transform_stamped)
 

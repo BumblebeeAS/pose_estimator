@@ -36,6 +36,9 @@ for key, object_points_mm in _object_points_mm_dict.items():
     object_points = np.array(object_points_mm, dtype=np.float32) / 1000.0
     OBJECT_POINTS_DICT[key] = np.array(object_points, dtype=np.float32)
 
+# Order: top-left, bottom-left, bottom-right, top-right
+# x-coordinates increase rightwards, y-coordinates increase downwards.
+# Origin at the top-left corner of the bin.
 BIN_OBJECT_POINTS = np.array(
     [(0, 0), (0, 609.60), (304.80, 609.60), (304.80, 0)],
     dtype=np.float32,
