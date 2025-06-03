@@ -1,34 +1,22 @@
 from operator import attrgetter
 
-import cv2
 import numpy as np
 import rclpy
-import tf2_ros
-import tf_transformations
-from cv_bridge import CvBridge
-from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.impl.rcutils_logger import RcutilsLogger
-from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from rclpy.wait_for_message import wait_for_message
-from sensor_msgs.msg import CameraInfo
-from transforms3d.quaternions import mat2quat
 from yolo_msgs.msg import Detection, DetectionArray
 
 from pose_estimator.utils.detections import (
     BIN_OBJECT_POINTS,
+    filter_detections_by_num_points,
     get_best_detections_per_class,
     get_best_fit_ngon,
     get_detection_obb,
-    match_polygon_points_sequence,
+    match_polygon_points,
     polygon_to_obb,
 )
-from pose_estimator.utils.PinholeCamera import PinholeCamera
-from pose_estimator.utils.pose_estimator import estimate_covariance, get_object_pose
-from pose_estimator.utils.ros_messages import (
-    get_pose_with_covariance_stamped,
-    get_transform_stamped,
-)
+from pose_estimator.utils.pose_estimator import get_object_pose, refine_object_pose
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 
 
 def get_detection_polygon(detection: Detection, logger: RcutilsLogger) -> np.ndarray:
@@ -36,80 +24,64 @@ def get_detection_polygon(detection: Detection, logger: RcutilsLogger) -> np.nda
     mask_points = [attrgetter("x", "y")(point) for point in mask.data]
 
     try:
-        # TODO: Make get_best_fit_ngon faster -> currently takes a few seconds
-        raise ValueError("Forcing ngon fit to test error handling")
         polygon_points = get_best_fit_ngon(np.array(mask_points, dtype=np.int32))
     except ValueError as e:
         logger.warn(f"Failed to get best fit ngon: {e}, using OBB instead")
-        polygon_obb = polygon_to_obb(np.array(mask_points))
-        polygon_points = np.array(polygon_obb.exterior.coords[:-1])
+        polygon_points = polygon_to_obb(mask_points)
 
     return polygon_points
 
 
-class BinPoseEstimator(Node):
+class BinPoseEstimator(PoseEstimatorNode):
     def __init__(self):
-        super().__init__("gate_pose_estimator_node")
-        self.bridge = CvBridge()
-
-        self.declare_parameter("object_frame_id", "bin/yolo")
-        self.declare_parameter("camera_info_topic", "camera_info")
-        self.declare_parameter("detections_topic", "yolo/detections")
+        super().__init__("bin_pose_estimator_node")
 
         self.object_frame_id = (
-            self.get_parameter("object_frame_id").get_parameter_value().string_value
+            self.declare_parameter("object_frame_id", "bin")
+            .get_parameter_value()
+            .string_value
         )
-
-        camera_info_topic = (
-            self.get_parameter("camera_info_topic").get_parameter_value().string_value
-        )
-        valid, camera_info = wait_for_message(CameraInfo, self, camera_info_topic)
-        if not valid:
-            raise ValueError("Failed to get camera info")
-        else:
-            camera_info: CameraInfo
-            self.camera = PinholeCamera.from_camera_info(camera_info, rectified=False)
-            self.camera_frame_id = camera_info.header.frame_id
-
         detections_topic = (
-            self.get_parameter("detections_topic").get_parameter_value().string_value
+            self.declare_parameter("input_detections_topic", "yolo/detections")
+            .get_parameter_value()
+            .string_value
         )
+
         self.detections_sub = self.create_subscription(
             DetectionArray,
             detections_topic,
             self.detections_callback,
             qos_profile_sensor_data,
         )
-        self.pose_publisher = self.create_publisher(
-            PoseWithCovarianceStamped, "/auv4/bin/yolo/pose", qos_profile_sensor_data
-        )
-        self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
     def detections_callback(self, msg: DetectionArray):
-        required_objects = 1
-        image_points, object_points = [], []
+        # We require at least 3 points for polygon creation
+        filtered_detections = filter_detections_by_num_points(msg, 3)
 
-        best_detections = get_best_detections_per_class(msg, ["bin"])
+        # Only include relevant classes
+        relevant_classes = ["bin"]
+        required_objects = 1
+
+        best_detections = get_best_detections_per_class(
+            filtered_detections, relevant_classes
+        )
         num_detected_objects = len(best_detections.keys())
         if num_detected_objects < required_objects:
             self.get_logger().warn(
-                f"Insufficient detected objects. Received: {num_detected_objects}, require: {required_objects}."
+                f"""Insufficient detected objects.
+                Received: {num_detected_objects}, require: {required_objects}."""
             )
             return
 
         # Match image points and object points
-        detections = list(best_detections.values())
-        polygon_objects = [BIN_OBJECT_POINTS]
-        # detected_polygons = list(
-        #     map(lambda x: get_detection_polygon(x, self.get_logger()), detections)
-        # )
-        detected_polygons = list(map(get_detection_obb, detections))
-        object_points, image_points = match_polygon_points_sequence(
-            polygon_objects, detected_polygons
-        )
+        angle, detected_points = get_detection_obb(best_detections["bin"])
+        # TODO: Make get_best_fit_ngon faster -> currently takes a few seconds
+        # detected_points = get_detection_polygon(best_detections["bin"], self.get_logger())
 
-        self.get_logger().info(
-            f"Matched {object_points} object points with {image_points} image points"
+        # Rotate object points before matching by point distances because bin yaw can
+        # be large and we assume perspective does not change imaged aspect ratio by much.
+        object_points, image_points = match_polygon_points(
+            BIN_OBJECT_POINTS, detected_points, A_angle=angle
         )
 
         object_points = np.hstack(
@@ -121,57 +93,25 @@ class BinPoseEstimator(Node):
         ), "Number of object points and image points must match"
 
         try:
+            # We can set a low max re-projection error and refine pose even though
+            # the segmentation mask is noisy because we only have 4 points
+
             rvec, tvec, inliers = get_object_pose(
-                self.camera, object_points, image_points, max_reprojection_error=100
+                self.camera, object_points, image_points
             )
 
             if inliers is None:
                 raise ValueError("No inliers found during pose estimation.")
 
-            R, _ = cv2.Rodrigues(rvec)
-            t = tvec.squeeze()
+            rvec, tvec = refine_object_pose(
+                self.camera, object_points, image_points, rvec, tvec
+            )
+
         except Exception as e:
             self.get_logger().warn(f"Pose estimation failed: {e}")
             return
 
-        try:
-            covariance = estimate_covariance(object_points, rvec, tvec, self.camera)
-        except np.linalg.LinAlgError as e:
-            self.get_logger().warn(
-                f"Covariance estimation failed, inversion for FIM matrix failed: {e}"
-            )
-            return
-
-        # self.get_logger().info(
-        #     f"Pose estimation std dev: {np.sqrt(covariance.diagonal())}"
-        # )
-
-        try:
-            q = mat2quat(R)
-        except np.linalg.LinAlgError as e:
-            self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
-            return
-
-        # Apply a 180-degree rotation around the x-axis
-        # TODO: Find out why this is needed
-        q_rot_x_180 = tf_transformations.quaternion_from_euler(np.pi, 0, 0)
-        q_rotated = tf_transformations.quaternion_multiply(q_rot_x_180, q)
-
-        # Stabilize -> zero roll and pitch components
-        # We can do this because we defined the object points to follow the
-        # camera frame orientation.
-        euler_rotated = tf_transformations.euler_from_quaternion(q_rotated)
-        q_stabilized = tf_transformations.quaternion_from_euler(0, 0, euler_rotated[2])
-
-        pose = get_pose_with_covariance_stamped(
-            msg.header, t, q_stabilized, covariance.flatten().tolist()
-        )
-        self.pose_publisher.publish(pose)
-
-        transform_stamped = get_transform_stamped(
-            msg.header, self.object_frame_id, t, q_stabilized
-        )
-        self.tf_broadcaster.sendTransform(transform_stamped)
+        self.publish_data(tvec, rvec, object_points, msg.header, self.object_frame_id)
 
 
 def main(args=None):
