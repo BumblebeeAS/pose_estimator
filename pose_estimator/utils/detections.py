@@ -308,6 +308,12 @@ def get_best_detections_per_class(
     return best_detections
 
 
+def get_detection_centroid(detection: Detection) -> np.ndarray:
+    mask = detection.mask
+    mask_points = [attrgetter("x", "y")(point) for point in mask.data]
+    return np.mean(mask_points, axis=0)
+
+
 def get_detection_obb(detection: Detection) -> np.ndarray:
     mask = detection.mask
     mask_points = [attrgetter("x", "y")(point) for point in mask.data]
