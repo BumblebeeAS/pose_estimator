@@ -3,8 +3,8 @@ import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from yolo_msgs.msg import DetectionArray
 
+from pose_estimator.config.object_points import GATE_FRONT_OBJECT_POINTS_DICT
 from pose_estimator.utils.detections import (
-    OBJECT_POINTS_DICT,
     filter_detections_by_num_points,
     get_best_detections_per_class,
     get_detection_obb,
@@ -58,7 +58,8 @@ class GatePoseEstimator(PoseEstimatorNode):
         # Match image points and object points
         detections = list(best_detections.values())
         polygon_objects = [
-            OBJECT_POINTS_DICT[detection.class_name] for detection in detections
+            GATE_FRONT_OBJECT_POINTS_DICT[detection.class_name]
+            for detection in detections
         ]
         detected_polygons = list(map(lambda det: get_detection_obb(det)[1], detections))
         object_points, image_points = match_polygon_points_sequence(

@@ -6,8 +6,8 @@ from rclpy.impl.rcutils_logger import RcutilsLogger
 from rclpy.qos import qos_profile_sensor_data
 from yolo_msgs.msg import Detection, DetectionArray
 
+from pose_estimator.config.object_points import BIN_OBJECT_POINTS
 from pose_estimator.utils.detections import (
-    BIN_OBJECT_POINTS,
     filter_detections_by_num_points,
     get_best_detections_per_class,
     get_best_fit_ngon,
