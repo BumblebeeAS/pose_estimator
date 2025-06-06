@@ -3,7 +3,10 @@ import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from yolo_msgs.msg import DetectionArray
 
-from pose_estimator.config.object_points import GATE_FRONT_OBJECT_POINTS_DICT
+from pose_estimator.config.object_points import (
+    GATE_BACK_OBJECT_POINTS_DICT,
+    GATE_FRONT_OBJECT_POINTS_DICT,
+)
 from pose_estimator.utils.detections import (
     filter_detections_by_num_points,
     get_best_detections_per_class,
@@ -28,6 +31,9 @@ class GatePoseEstimator(PoseEstimatorNode):
             .get_parameter_value()
             .string_value
         )
+        from_front = (
+            self.declare_parameter("from_front", True).get_parameter_value().bool_value
+        )
 
         self.detections_sub = self.create_subscription(
             DetectionArray,
@@ -35,6 +41,11 @@ class GatePoseEstimator(PoseEstimatorNode):
             self.detections_callback,
             qos_profile_sensor_data,
         )
+
+        if from_front:
+            self.object_points = GATE_FRONT_OBJECT_POINTS_DICT
+        else:
+            self.object_points = GATE_BACK_OBJECT_POINTS_DICT
 
     def detections_callback(self, msg: DetectionArray):
         # We require at least 3 points for polygon creation
@@ -58,8 +69,7 @@ class GatePoseEstimator(PoseEstimatorNode):
         # Match image points and object points
         detections = list(best_detections.values())
         polygon_objects = [
-            GATE_FRONT_OBJECT_POINTS_DICT[detection.class_name]
-            for detection in detections
+            self.object_points[detection.class_name] for detection in detections
         ]
         detected_polygons = list(map(lambda det: get_detection_obb(det)[1], detections))
         object_points, image_points = match_polygon_points_sequence(

@@ -1,5 +1,6 @@
 import numpy as np
 
+# Gate when passing from the front.
 # Order: top-left, bottom-left, bottom-right, top-right
 # x-coordinates increase rightwards, y-coordinates increase downwards.
 # Origin at the top-left corner of the gate.
@@ -23,10 +24,19 @@ GATE_FRONT_OBJECT_POINTS_DICT = {
         ((3048.00 + 50.80) / 2, 0),
     ],
 }
-GATE_FRONT_OBJECT_POINTS_DICT = {}
 for key, object_points_mm in GATE_FRONT_OBJECT_POINTS_DICT.items():
     object_points = np.array(object_points_mm, dtype=np.float32) / 1000.0
     GATE_FRONT_OBJECT_POINTS_DICT[key] = object_points
+
+# Gate when passing from the back.
+# Same as passing from the front but left and right sides are swapped.
+# NOTE: This is DIFFERENT from flipping the points as the matching of polygon points
+# is done in a specific order.
+GATE_BACK_OBJECT_POINTS_DICT = {
+    "gate_sides_left": GATE_FRONT_OBJECT_POINTS_DICT["gate_sides_right"],
+    "gate_sides_right": GATE_FRONT_OBJECT_POINTS_DICT["gate_sides_left"],
+    "gate_center": GATE_FRONT_OBJECT_POINTS_DICT["gate_center"],
+}
 
 # Order: top-left, bottom-left, bottom-right, top-right
 # x-coordinates increase rightwards, y-coordinates increase downwards.
