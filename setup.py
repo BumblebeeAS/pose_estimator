@@ -34,6 +34,7 @@ setup(
             "gate_pose_estimator_node = pose_estimator.gate_pose_estimator_node:main",
             "shark_fish_estimator_node = pose_estimator.shark_fish_estimator_node:main",
             "bin_pose_estimator_node = pose_estimator.bin_pose_estimator_node:main",
+            "slalom_pose_estimator_node = pose_estimator.slalom_pose_estimator_node:main",
         ],
     },
 )

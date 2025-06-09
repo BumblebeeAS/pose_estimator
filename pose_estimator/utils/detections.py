@@ -4,6 +4,7 @@ from typing import Dict, List, Sequence, Tuple
 import cv2
 import numpy as np
 import sympy
+from cv2.typing import MatLike
 from numpy.typing import ArrayLike
 from yolo_msgs.msg import Detection, DetectionArray
 
@@ -284,7 +285,7 @@ def get_best_detections_per_class(
     the returned dictionary would not contain an entry for that class.
 
     Args:
-        msg (DetectionArray): Array of Detections
+        detection_array_msg (DetectionArray): Array of Detections
         classes (List[str]): List of classes to get best detections for.
 
     Returns:
@@ -302,14 +303,94 @@ def get_best_detections_per_class(
     return best_detections
 
 
-def get_detection_centroid(detection: Detection) -> np.ndarray:
+def get_top_k_detections_per_class(
+    detection_array_msg: DetectionArray, class_k_dict: Dict[str, int]
+) -> Dict[str, List[Detection]]:
+    """Returns the top k detections (by score) per class.
+
+    Note: If there are no detections for a class,
+    the returned dictionary would not contain an entry for that class.
+
+    Args:
+        detection_array_msg (DetectionArray): Array of Detections
+        class_k_dict (Dict[str, int]): Dictionary mapping class names to k values.
+
+    Returns:
+        Dict[str, List[Detection]]: Dictionary of lists of detections with class names as key.
+    """
+    top_k_detections = {class_name: [] for class_name in class_k_dict.keys()}
+    for detection in detection_array_msg.detections:
+        class_name = detection.class_name
+        if class_name in class_k_dict:
+            top_k_detections[class_name].append(detection)
+
+    for class_name in class_k_dict.keys():
+        top_k_detections[class_name].sort(key=lambda x: x.score, reverse=True)
+        k = class_k_dict[class_name]
+        top_k_detections[class_name] = top_k_detections[class_name][:k]
+    return top_k_detections
+
+
+def get_detection_polygon(detection: Detection) -> np.ndarray:
+    """Get the polygon points of a detection mask.
+
+    Args:
+        detection (Detection): Detection object containing the mask.
+
+    Returns:
+        np.ndarray: Array of points representing the polygon.
+    """
     mask = detection.mask
     mask_points = [attrgetter("x", "y")(point) for point in mask.data]
+    return np.array(mask_points, dtype=np.float32)
+
+
+def get_detection_centroid(detection: Detection) -> np.ndarray:
+    mask_points = get_detection_polygon(detection)
     return np.mean(mask_points, axis=0)
 
 
 def get_detection_obb(detection: Detection) -> Tuple[float, np.ndarray]:
-    mask = detection.mask
-    mask_points = [attrgetter("x", "y")(point) for point in mask.data]
+    mask_points = get_detection_polygon(detection)
     angle, obb_points = polygon_to_obb(mask_points)
     return angle, obb_points
+
+
+def assign_to_centroids(data: ArrayLike, centroids: ArrayLike) -> np.ndarray:
+    """
+    data: (n_samples, n_features)
+    centroids: (k, n_features)
+    returns: (n_samples,) array of cluster indices
+    """
+    data = np.asarray(data)
+    centroids = np.asarray(centroids)
+    dists = np.linalg.norm(data[:, np.newaxis, :] - centroids[np.newaxis, :, :], axis=2)
+    return np.argmin(dists, axis=1)
+
+
+def get_object_depth(depth_image: MatLike, object_mask: MatLike) -> float:
+    """Get the median depth of an object in a depth image.
+
+    Args:
+        depth_image (MatLike): Depth image.
+        object_mask (MatLike): Binary mask of the object.
+
+    Returns:
+        float: Median depth of the object.
+    """
+    # Resize mask to match depth image size
+    # cv2.imshow("depth_image", depth_image)
+    # cv2.imshow("object_mask", object_mask * 255)
+    # cv2.waitKey(0)
+
+    if depth_image.shape[:2] != object_mask.shape[:2]:
+        object_mask = cv2.resize(
+            object_mask, (depth_image.shape[1], depth_image.shape[0])
+        )
+
+    masked_depth = depth_image[object_mask > 0]
+
+    if masked_depth.size == 0:
+        return float("nan")
+
+    return np.median(masked_depth)
