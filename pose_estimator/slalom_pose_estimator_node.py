@@ -1,3 +1,5 @@
+from typing import List
+
 import message_filters
 import numpy as np
 import rclpy
@@ -6,7 +8,7 @@ from message_filters import TimeSynchronizer
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from supervision.detection.utils import polygon_to_mask
-from yolo_msgs.msg import DetectionArray
+from yolo_msgs.msg import Detection, DetectionArray
 
 from pose_estimator.config.object_points import SLALOM_GATE_OBJECT_POINTS_DICT
 from pose_estimator.utils.detections import (
@@ -58,7 +60,7 @@ class SlalomPoseEstimator(PoseEstimatorNode):
         # Parse detections
         depth_img = self.cv_bridge.imgmsg_to_cv2(depth_msg, desired_encoding="32FC1")
 
-        def process_pole_detections(detections: DetectionArray):
+        def process_pole_detections(detections: List[Detection]):
             pole_obbs = [get_detection_obb(det)[1] for det in detections]
             resolution_wh_list = [
                 (det.mask.width, det.mask.height) for det in detections
