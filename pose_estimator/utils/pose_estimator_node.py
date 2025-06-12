@@ -41,6 +41,7 @@ class PoseEstimatorNode(Node):
         else:
             camera_info: CameraInfo
             self.camera = PinholeCamera.from_camera_info(camera_info, rectified=False)
+        self.camera: PinholeCamera
 
         # Transforms broadcaster
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
@@ -49,6 +50,27 @@ class PoseEstimatorNode(Node):
         self.pose_publisher = self.create_publisher(
             PoseWithCovarianceStamped, output_pose_topic, qos_profile_sensor_data
         )
+
+    def get_translation_quaternion(tvec: np.ndarray, rvec: np.ndarray):
+        """Convert translation vector and rotation vector to translation and quaternion.
+
+        Args:
+            tvec: Translation vector (3x1 NumPy array).
+            rvec: Rotation vector (3x1 NumPy array).
+
+        Raises:
+            Exception: If Rodrigues conversion fails.
+            np.linalg.LinAlgError: If mat2quat fails.
+
+        Returns:
+            t: Translation vector (3-element list).
+            q: Quaternion (4-element list in ROS format [x, y, z, w]).
+        """
+        R, _ = cv2.Rodrigues(rvec)
+        t = tvec.squeeze()
+        q = mat2quat(R)  # [w, x, y, z]
+        q = [q[1], q[2], q[3], q[0]]  # ROS uses [x, y, z, w]
+        return t, q
 
     def publish_data(
         self,
@@ -62,12 +84,17 @@ class PoseEstimatorNode(Node):
         Publish the translation vector and rotation vector as a Transform and a Pose.
         """
         try:
-            R, _ = cv2.Rodrigues(rvec)
-            t = tvec.squeeze()
-        # TODO: Not sure if an exception can occur here.
+            t, q = self.get_translation_quaternion(tvec, rvec)
+        except np.linalg.LinAlgError as e:
+            self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
+            return
         except Exception as e:
+            # TODO: Not sure if an exception can occur here.
             self.get_logger().warn(f"Rodrigues conversion failed: {e}")
             return
+
+        transform_stamped = get_transform_stamped(header, object_frame_id, t, q)
+        self.tf_broadcaster.sendTransform(transform_stamped)
 
         try:
             covariance = estimate_covariance(object_points, rvec, tvec, self.camera)
@@ -81,17 +108,30 @@ class PoseEstimatorNode(Node):
         #     f"Pose estimation std dev: {np.sqrt(covariance.diagonal())}"
         # )
 
-        try:
-            q = mat2quat(R)  # [w, x, y, z]
-            q = [q[1], q[2], q[3], q[0]]  # ROS uses [x, y, z, w]
-        except np.linalg.LinAlgError as e:
-            self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
-            return
-
         pose = get_pose_with_covariance_stamped(
             header, t, q, covariance.flatten().tolist()
         )
         self.pose_publisher.publish(pose)
+
+    def publish_transform(
+        self,
+        tvec: np.ndarray,
+        rvec: np.ndarray,
+        header: Header,
+        object_frame_id: str,
+    ):
+        """
+        Publish the translation vector and rotation vector as a Transform.
+        """
+        try:
+            t, q = self.get_translation_quaternion(tvec, rvec)
+        except Exception as e:
+            # TODO: Not sure if an exception can occur here.
+            self.get_logger().warn(f"Rodrigues conversion failed: {e}")
+            return
+        except np.linalg.LinAlgError as e:
+            self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
+            return
 
         transform_stamped = get_transform_stamped(header, object_frame_id, t, q)
         self.tf_broadcaster.sendTransform(transform_stamped)
