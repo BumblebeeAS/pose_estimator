@@ -197,7 +197,7 @@ class SlalomPoseEstimator(PoseEstimatorNode):
                 # pose estimator, but it may also result in no inliers being found.
 
                 rvec, tvec, inliers = get_object_pose(
-                    self.camera, object_points, image_points, max_reprojection_error=100
+                    self.camera, object_points, image_points, max_reprojection_error=10
                 )
 
                 if inliers is None:
