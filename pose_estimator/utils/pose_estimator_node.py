@@ -51,7 +51,7 @@ class PoseEstimatorNode(Node):
             PoseWithCovarianceStamped, output_pose_topic, qos_profile_sensor_data
         )
 
-    def get_translation_quaternion(tvec: np.ndarray, rvec: np.ndarray):
+    def get_translation_quaternion(self, tvec: np.ndarray, rvec: np.ndarray):
         """Convert translation vector and rotation vector to translation and quaternion.
 
         Args:
