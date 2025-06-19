@@ -14,7 +14,8 @@ def backproject_pixel(
     x: float, y: float, Z: float, K: np.ndarray
 ) -> tuple[float, float]:
     """
-    Solve w * [x, y, 1]^T = K * [X, Y, Z]^T for X, Y, given Z.
+    Solve w * [x, y, 1]^T = K * [X, Y, Z]^T for X, Y, given Z, where
+    w is the unknown scale factor.
 
     Args:
         x, y: Image coordinates
@@ -86,4 +87,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()
