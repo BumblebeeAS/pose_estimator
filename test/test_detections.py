@@ -3,8 +3,8 @@ import numpy as np
 from matplotlib.axes import Axes
 from numpy.typing import ArrayLike
 
+from pose_estimator.config.object_points import GATE_FRONT_OBJECT_POINTS_DICT
 from pose_estimator.utils.detections import (
-    OBJECT_POINTS_DICT,
     match_polygon_points,
     polygon_to_obb,
     rotate_polygon,
@@ -30,7 +30,10 @@ def plot_quadrilaterals(ax: Axes, points: ArrayLike) -> None:
 
 
 object_points = np.concatenate(
-    [OBJECT_POINTS_DICT["gate_center"], OBJECT_POINTS_DICT["gate_sides_left"]]
+    [
+        GATE_FRONT_OBJECT_POINTS_DICT["gate_center"],
+        GATE_FRONT_OBJECT_POINTS_DICT["gate_sides_left"],
+    ]
 )
 object_points_2d = object_points[:, :2]
 

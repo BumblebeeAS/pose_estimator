@@ -1,6 +1,7 @@
+# Unless otherwise stated, object points follow this convention:
 # Order: top-left, bottom-left, bottom-right, top-right
 # x-coordinates increase rightwards, y-coordinates increase downwards.
-# Origin at the top-left corner of the gate.
+# Origin at the top-left corner.
 
 import numpy as np
 
@@ -65,3 +66,33 @@ SLALOM_GATE_OBJECT_POINTS_DICT = {
 }
 for key, object_points in SLALOM_GATE_OBJECT_POINTS_DICT.items():
     object_points = np.array(object_points, dtype=np.float32)
+    SLALOM_GATE_OBJECT_POINTS_DICT[key] = object_points
+
+# Order: top-left, bottom-left, bottom-right, top-right
+# x-coordinates increase rightwards, y-coordinates increase downwards.
+# Origin at the CENTER. Yellow bucket on the left, pink bucket on the right.
+# Buckets are 184 mm (x) by 270 mm (y). Table is 609.60 mm by 609.60 mm.
+TRASH_TABLE_OBJECT_POINTS = {
+    "table": [
+        (-304.80, -304.80),
+        (-304.80, 304.80),
+        (304.80, 304.80),
+        (304.80, -304.80),
+    ],
+    "yellow_bucket": [
+        (-184 - 304.80, -270 / 2),
+        (-184 - 304.80, 270 / 2),
+        (-304.80, 270 / 2),
+        (-304.80, -270 / 2),
+    ],
+    "pink_bucket": [
+        (304.80, -270 / 2),
+        (304.80, 270 / 2),
+        (304.80 + 184, 270 / 2),
+        (304.80 + 184, -270 / 2),
+    ],
+}
+
+for key, object_points in TRASH_TABLE_OBJECT_POINTS.items():
+    object_points = np.array(object_points, dtype=np.float32) / 1000.0
+    TRASH_TABLE_OBJECT_POINTS[key] = object_points

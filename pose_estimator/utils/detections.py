@@ -346,6 +346,7 @@ def get_detection_polygon(detection: Detection) -> np.ndarray:
 
 
 def get_detection_centroid(detection: Detection) -> np.ndarray:
+    # FIXME: https://en.wikipedia.org/wiki/Centroid#Of_a_polygon
     mask_points = get_detection_polygon(detection)
     return np.mean(mask_points, axis=0)
 
