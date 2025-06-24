@@ -72,7 +72,7 @@ for key, object_points in SLALOM_GATE_OBJECT_POINTS_DICT.items():
 # x-coordinates increase rightwards, y-coordinates increase downwards.
 # Origin at the CENTER. Yellow bucket on the left, pink bucket on the right.
 # Buckets are 184 mm (x) by 270 mm (y). Table is 609.60 mm by 609.60 mm.
-TRASH_TABLE_OBJECT_POINTS = {
+TRASH_TABLE_OBJECT_POINTS_DICT = {
     "table": [
         (-304.80, -304.80),
         (-304.80, 304.80),
@@ -93,11 +93,16 @@ TRASH_TABLE_OBJECT_POINTS = {
     ],
 }
 
-for key, object_points in TRASH_TABLE_OBJECT_POINTS.items():
+for key, object_points in TRASH_TABLE_OBJECT_POINTS_DICT.items():
     object_points = np.array(object_points, dtype=np.float32) / 1000.0
-    TRASH_TABLE_OBJECT_POINTS[key] = object_points
+    TRASH_TABLE_OBJECT_POINTS_DICT[key] = object_points
 
-SYMBOL_OBJECT_POINTS = {
+SYMBOL_OBJECT_POINTS_DICT = {
     "reef_shark": [(0.0, 0.0), (0.0, 0.305), (0.305, 0.305), (0.305, 0.0)],
     "sawfish": [(0.0, 0.0), (0.0, 0.305), (0.305, 0.305), (0.305, 0.0)],
+}
+
+TORPEDO_OBJECT_POINTS_DICT = {
+    "torpedo_1": [(0.0, 0.0), (0.0, 0.6096), (0.6096, 0.6096), (0.6096, 0.0)],
+    "torpedo_2": [(0.0, 0.0), (0.0, 0.6096), (0.6096, 0.6096), (0.6096, 0.0)],
 }

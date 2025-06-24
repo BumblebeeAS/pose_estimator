@@ -5,7 +5,7 @@ import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from yolo_msgs.msg import Detection, DetectionArray
 
-from pose_estimator.config.object_points import TRASH_TABLE_OBJECT_POINTS
+from pose_estimator.config.object_points import TRASH_TABLE_OBJECT_POINTS_DICT
 from pose_estimator.utils.detections import (
     filter_detections_by_num_points,
     get_best_detections_per_class,
@@ -24,7 +24,7 @@ def match_bucket_points(table_detection: Detection, bucket_detections: List[Dete
     image_points = []
 
     for bucket_detection in bucket_detections:
-        object_polygon = TRASH_TABLE_OBJECT_POINTS[bucket_detection.class_name]
+        object_polygon = TRASH_TABLE_OBJECT_POINTS_DICT[bucket_detection.class_name]
         angle, detected_polygon = get_detection_obb(bucket_detection)
 
         # Match bucket points by least squares method (using their aspect ratio).
@@ -52,7 +52,7 @@ def match_bucket_points(table_detection: Detection, bucket_detections: List[Dete
 def match_table_points(
     table_detection: Detection, bucket_detections_dict: Dict[str, Detection]
 ):
-    table_object_points = TRASH_TABLE_OBJECT_POINTS["table"]
+    table_object_points = TRASH_TABLE_OBJECT_POINTS_DICT["table"]
     table_object_points = order_points_clockwise(table_object_points)
     table_detected_polygon = get_detection_obb(table_detection)[1]
     table_detected_polygon = order_points_clockwise(table_detected_polygon)

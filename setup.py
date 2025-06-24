@@ -38,6 +38,7 @@ setup(
             "slalom_pose_estimator_node = pose_estimator.slalom_pose_estimator_node:main",
             "trash_pose_estimator_node = pose_estimator.trash_pose_estimator_node:main",
             "trash_table_pose_estimator_node = pose_estimator.trash_table_pose_estimator_node:main",
+            "torpedo_pose_estimator_node = pose_estimator.torpedo_pose_estimator_node:main",
         ],
     },
 )

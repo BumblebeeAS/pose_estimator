@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 
+from pose_estimator.utils.detections import get_detection_obb, match_polygon_points
 from pose_estimator.utils.PinholeCamera import PinholeCamera
 
 
@@ -169,3 +170,43 @@ def estimate_covariance(
 
     # Fisher information matrix
     return np.linalg.inv(jacobian.T @ jacobian)
+
+
+def get_object_pose_from_detection_using_obb(
+    camera: PinholeCamera, object_polygon: np.ndarray, detection: object
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Estimates pose of a detection using the oriented bounding box of its mask.
+    The most naive method of pose estimation, but works well when the following
+    conditions are met:
+
+    - The object is not rotated more than 45 degrees from its upright orientation.
+    - The object is rectangular.
+    - Perspective does not significantly affect the object's aspect ratio.
+
+    Args:
+        camera (PinholeCamera):
+        object_polygon (np.ndarray): N x 2 array representing the polygon of the object in world coordinates.
+        detection (object): Detection object containing the mask and class name.
+
+    Raises:
+        ValueError: If the number of object points is less than 4.
+        Exception: If cv2.solvePnPRansac fails.
+        ValueError: If no inliers are found during pose estimation.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: (rvec, tvec)
+    """
+    _, detected_polygon = get_detection_obb(detection)
+    object_points, image_points = match_polygon_points(object_polygon, detected_polygon)
+    object_points = np.hstack([object_points, np.zeros((object_points.shape[0], 1))])
+
+    # We can set a low max re-projection error and refine pose even though
+    # the segmentation mask is noisy because we only have 4 points
+    rvec, tvec, inliers = get_object_pose(camera, object_points, image_points)
+
+    if inliers is None:
+        raise ValueError("No inliers found during pose estimation.")
+
+    rvec, tvec = refine_object_pose(camera, object_points, image_points, rvec, tvec)
+
+    return rvec, tvec

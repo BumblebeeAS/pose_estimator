@@ -1,14 +1,14 @@
 import rclpy
 
-from pose_estimator.config.object_points import SYMBOL_OBJECT_POINTS_DICT
+from pose_estimator.config.object_points import TORPEDO_OBJECT_POINTS_DICT
 from pose_estimator.utils.obb_pose_estimator_node import OBBPoseEstimator
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = OBBPoseEstimator(
-        SYMBOL_OBJECT_POINTS_DICT,
-        {"reef_shark": "trash/shark", "sawfish": "trash/fish"},
+        TORPEDO_OBJECT_POINTS_DICT,
+        {"torpedo_1": "torpedo_1/yolo", "torpedo_2": "torpedo_2/yolo"},
     )
     try:
         rclpy.spin(node)
