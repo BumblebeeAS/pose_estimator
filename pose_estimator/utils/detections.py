@@ -3,6 +3,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import cv2
 import numpy as np
+import shapely
 import sympy
 from cv2.typing import MatLike
 from numpy.typing import ArrayLike
@@ -346,9 +347,22 @@ def get_detection_polygon(detection: Detection) -> np.ndarray:
 
 
 def get_detection_centroid(detection: Detection) -> np.ndarray:
-    # FIXME: https://en.wikipedia.org/wiki/Centroid#Of_a_polygon
-    mask_points = get_detection_polygon(detection)
-    return np.mean(mask_points, axis=0)
+    """Get the centroid of a detection using its mask.
+
+    Args:
+        detection (Detection): Detection object containing the mask.
+
+    Returns:
+        np.ndarray: Centroid coordinates as a NumPy array.
+    """
+    mask_polygon_points = get_detection_polygon(detection)
+
+    # If there are fewer than 3 points, shapely.Polygon cannot be created.
+    if len(mask_polygon_points) < 3:
+        return mask_polygon_points.mean(axis=0)
+
+    centroid = shapely.Polygon(mask_polygon_points).centroid
+    return np.array([centroid.x, centroid.y], dtype=np.float32)
 
 
 def get_detection_obb(detection: Detection) -> Tuple[float, np.ndarray]:
