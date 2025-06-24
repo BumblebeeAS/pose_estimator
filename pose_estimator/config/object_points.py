@@ -96,3 +96,8 @@ TRASH_TABLE_OBJECT_POINTS = {
 for key, object_points in TRASH_TABLE_OBJECT_POINTS.items():
     object_points = np.array(object_points, dtype=np.float32) / 1000.0
     TRASH_TABLE_OBJECT_POINTS[key] = object_points
+
+SYMBOL_OBJECT_POINTS = {
+    "reef_shark": [(0.0, 0.0), (0.0, 0.305), (0.305, 0.305), (0.305, 0.0)],
+    "sawfish": [(0.0, 0.0), (0.0, 0.305), (0.305, 0.305), (0.305, 0.0)],
+}
