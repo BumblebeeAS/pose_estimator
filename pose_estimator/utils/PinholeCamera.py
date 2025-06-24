@@ -44,20 +44,3 @@ class PinholeCamera(object):
 
     def dist_coeffs(self):
         return self.d
-
-
-PINHOLE_CAMERAS = {
-    "sim": PinholeCamera(
-        768,
-        492,
-        407.0646129842357,
-        407.0646129842357,
-        384.5,
-        246.5,
-        0,
-        0,
-        0,
-        0,
-        0,
-    )
-}

@@ -29,12 +29,14 @@ class SharkFishEstimator(Node):
         )
         self.string_publisher = self.create_publisher(String, output_string_topic, 10)
 
-    def detections_callback(self, msg: DetectionArray):
+    def detections_callback(self, detections_msg: DetectionArray):
         # Only include relevant classes
         relevant_classes = ["reef_shark", "sawfish"]
         required_objects = 2
 
-        best_detections = get_best_detections_per_class(msg, relevant_classes)
+        best_detections = get_best_detections_per_class(
+            detections_msg, relevant_classes
+        )
 
         num_detected_objects = len(best_detections.keys())
         if num_detected_objects < required_objects:

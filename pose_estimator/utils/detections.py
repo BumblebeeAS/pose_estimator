@@ -366,8 +366,19 @@ def get_detection_centroid(detection: Detection) -> np.ndarray:
 
 
 def get_detection_obb(detection: Detection) -> Tuple[float, np.ndarray]:
-    mask_points = get_detection_polygon(detection)
-    angle, obb_points = polygon_to_obb(mask_points)
+    """Get the Oriented Bounding Box (OBB) of a detection.
+
+    Args:
+        detection (Detection): Detection object containing the mask.
+
+    Raises:
+        ValueError: If the number of points in the mask is less than 3.
+
+    Returns:
+        Tuple[float, np.ndarray]: Angle in degrees and OBB points.
+    """
+    mask_polygon_points = get_detection_polygon(detection)
+    angle, obb_points = polygon_to_obb(mask_polygon_points)
     return angle, obb_points
 
 

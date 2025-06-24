@@ -174,11 +174,6 @@ class SlalomPoseEstimator(PoseEstimatorNode):
             detected_polygons = detected_polygons_dict[layer]
             object_polygons = object_polygons_dict[layer]
 
-            # self.get_logger().info(
-            #     f"Estimating pose for slalom layer {layer} with "
-            #     f"{detected_polygons} detected polygons."
-            # )
-
             object_points, image_points = match_polygon_points_sequence(
                 object_polygons, detected_polygons
             )
