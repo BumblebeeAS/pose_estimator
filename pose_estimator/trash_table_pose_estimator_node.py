@@ -86,7 +86,7 @@ def match_table_points(
         pink_bucket_detection = bucket_detections_dict["pink_bucket"]
         pink_bucket_centroid = get_detection_centroid(pink_bucket_detection)
 
-        norms = np.linalg.norm(table_detected_polygon - pink_bucket_centroid)
+        norms = np.linalg.norm(table_detected_polygon - pink_bucket_centroid, axis=1)
         furthest_points = np.argsort(norms)[-2:]
         next_points = (furthest_points + 1) % 4
         if norms[next_points[0]] < norms[next_points[1]]:
