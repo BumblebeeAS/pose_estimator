@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import cv2
 import numpy as np
 
@@ -10,7 +12,7 @@ def get_object_pose(
     object_points: np.ndarray,
     image_points: np.ndarray,
     max_reprojection_error: float = 2.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Get the object pose from the camera and point correspondences.
 
     Args:
@@ -20,7 +22,7 @@ def get_object_pose(
         max_reprojection_error (float): Maximum reprojection error for RANSAC.
 
     Returns:
-        tuple[np.ndarray, np.ndarray, np.ndarray]: (R, t, inliers)
+        Tuple[np.ndarray, np.ndarray, np.ndarray]: (R, t, inliers)
 
     Raises:
         ValueError: If the number of object points is less than 4.
@@ -55,7 +57,7 @@ def refine_object_pose(
     rvec: np.ndarray,
     tvec: np.ndarray,
     term_eps: float = 1e-6,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Refine the object pose using the initial pose estimate.
 
     Args:
@@ -67,7 +69,7 @@ def refine_object_pose(
         term_eps (float): Maximum error for refinement.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]: Refined rotation and translation vectors.
+        Tuple[np.ndarray, np.ndarray]: Refined rotation and translation vectors.
 
     Raises:
         Exception: If cv2.solvePnPRefineVVS fails.
@@ -89,7 +91,9 @@ def refine_object_pose(
     return rvec, tvec
 
 
-def filter_by_homography(object_points: np.ndarray, image_points: np.ndarray) -> tuple:
+def filter_by_homography(
+    object_points: np.ndarray, image_points: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
     """Filter the object points and image points by homography,
     assuming that the object points are in the same plane.
 
@@ -102,7 +106,7 @@ def filter_by_homography(object_points: np.ndarray, image_points: np.ndarray) ->
         image_points (np.ndarray): N x 2
 
     Returns:
-        tuple[np.ndarray, np.ndarray, np.ndarray]: (R, t, inliers)
+        Tuple[np.ndarray, np.ndarray]: (object_points, image_points)
 
     Raises:
         ValueError: If the number of object points is less than 4.
@@ -140,7 +144,7 @@ def estimate_covariance(
     tvec: np.ndarray,
     camera: PinholeCamera,
 ) -> np.ndarray:
-    """Get covariance of pose estimate from reprojection.
+    """Get covariance of pose estimate from re-projection.
 
     Args:
         object_points (np.ndarray): N x 3
