@@ -8,7 +8,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = OBBPoseEstimator(
         TORPEDO_OBJECT_POINTS_DICT,
-        {"torpedo_1": "torpedo_1/yolo", "torpedo_2": "torpedo_2/yolo"},
+        {"torpedo_1": "torpedo/yolo", "torpedo_2": "torpedo/yolo"},
     )
     try:
         rclpy.spin(node)
