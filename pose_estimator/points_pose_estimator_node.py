@@ -2,6 +2,7 @@ import logging
 
 import rclpy
 from bb_perception_msgs.msg import PointCorrespondencesStamped
+from rclpy.qos import qos_profile_sensor_data
 from utils.ros_np_multiarray import to_numpy_f64
 
 from pose_estimator.utils.pose_estimator import (
@@ -27,7 +28,7 @@ class PointsPoseEstimator(PoseEstimatorNode):
             PointCorrespondencesStamped,
             input_points_topic,
             self.point_correspondences_callback,
-            1,
+            qos_profile_sensor_data,
         )
 
     def point_correspondences_callback(self, msg: PointCorrespondencesStamped):

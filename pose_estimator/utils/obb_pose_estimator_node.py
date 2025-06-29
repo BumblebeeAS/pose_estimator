@@ -1,6 +1,7 @@
 from typing import Dict, List
 
 from cv_bridge import CvBridge
+from rclpy.qos import qos_profile_sensor_data
 from yolo_msgs.msg import DetectionArray
 
 from pose_estimator.utils.detections import (
@@ -59,7 +60,10 @@ class OBBPoseEstimator(PoseEstimatorNode):
 
         self.bridge = CvBridge()
         self.detections_sub = self.create_subscription(
-            DetectionArray, input_detections_topic, self.detections_callback, 1
+            DetectionArray,
+            input_detections_topic,
+            self.detections_callback,
+            qos_profile_sensor_data,
         )
 
     def detections_callback(self, detections_msg: DetectionArray):
