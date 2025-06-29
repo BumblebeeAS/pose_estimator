@@ -1,35 +1,18 @@
-from operator import attrgetter
-
 import numpy as np
 import rclpy
-from rclpy.impl.rcutils_logger import RcutilsLogger
 from rclpy.qos import qos_profile_sensor_data
-from yolo_msgs.msg import Detection, DetectionArray
+from yolo_msgs.msg import DetectionArray
 
 from pose_estimator.config.object_points import BIN_OBJECT_POINTS
 from pose_estimator.utils.detections import (
     filter_detections_by_num_points,
     get_best_detections_per_class,
-    get_best_fit_ngon,
+    get_best_fit_polygon,
     get_detection_obb,
     match_polygon_points,
-    polygon_to_obb,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose, refine_object_pose
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
-
-
-def get_detection_polygon(detection: Detection, logger: RcutilsLogger) -> np.ndarray:
-    mask = detection.mask
-    mask_points = [attrgetter("x", "y")(point) for point in mask.data]
-
-    try:
-        polygon_points = get_best_fit_ngon(np.array(mask_points, dtype=np.int32))
-    except ValueError as e:
-        logger.warn(f"Failed to get best fit ngon: {e}, using OBB instead")
-        polygon_points = polygon_to_obb(mask_points)
-
-    return polygon_points
 
 
 class BinPoseEstimator(PoseEstimatorNode):
@@ -75,8 +58,10 @@ class BinPoseEstimator(PoseEstimatorNode):
 
         # Match image points and object points
         angle, detected_points = get_detection_obb(best_detections["bin"])
-        # TODO: Make get_best_fit_ngon faster -> currently takes a few seconds
-        # detected_points = get_detection_polygon(best_detections["bin"], self.get_logger())
+        # TODO: Make get_best_fit_polygon return an angle estimate
+        # detected_points = get_best_fit_polygon(
+        #     best_detections["bin"], self.get_logger()
+        # )
 
         # Rotate object points before matching by point distances because bin yaw can
         # be large and we assume perspective does not change imaged aspect ratio by much.

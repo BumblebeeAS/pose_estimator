@@ -3,10 +3,12 @@ from typing import Dict, List, Sequence, Tuple
 
 import cv2
 import numpy as np
+import rclpy
 import shapely
 import sympy
 from cv2.typing import MatLike
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
+from rclpy.impl.rcutils_logger import RcutilsLogger
 from yolo_msgs.msg import Detection, DetectionArray
 
 
@@ -182,24 +184,92 @@ def polygon_to_obb(points: ArrayLike) -> Tuple[float, np.ndarray]:
     return corrected_angle, box_points
 
 
+def get_interior_angle(
+    point1: NDArray[np.float_], point2: NDArray[np.float_], point3: NDArray[np.float_]
+) -> float:
+    """Calculate the interior angle at point2 formed by point1 and point3.
+
+    Args:
+        point1 (NDArray[np.float_]): First point.
+        point2 (NDArray[np.float_]): Vertex point.
+        point3 (NDArray[np.float_]): Third point.
+
+    Raises:
+        ValueError: If the length of either vector formed by point1-point2 or point3-point2 is zero.
+
+    Returns:
+        float: Interior angle in radians.
+    """
+    vector1 = point1 - point2
+    vector2 = point3 - point2
+    norm1 = np.linalg.norm(vector1)
+    norm2 = np.linalg.norm(vector2)
+
+    if norm1 == 0 or norm2 == 0:
+        raise ValueError("Cannot calculate angle with zero-length vector.")
+
+    cos_angle = np.dot(vector1, vector2) / (norm1 * norm2)
+    return np.arccos(np.clip(cos_angle, -1.0, 1.0))
+
+
+def get_intersection_point(
+    p1: NDArray[np.float_],
+    p2: NDArray[np.float_],
+    q1: NDArray[np.float_],
+    q2: NDArray[np.float_],
+) -> NDArray[np.float_]:
+    """Return intersection point of lines (p1, p2) and (q1, q2) in R2.
+
+    Args:
+        p1 (NDArray[np.float_]): First point of the first line segment.
+        p2 (NDArray[np.float_]): Second point of the first line segment.
+        q1 (NDArray[np.float_]): First point of the second line segment.
+        q2 (NDArray[np.float_]): Second point of the second line segment.
+
+    Returns:
+        NDArray[np.float_]: Intersection point as a NumPy array.
+
+    Raises:
+        ValueError: If the lines do not intersect.
+    """
+    A = np.array([[p2[0] - p1[0], q1[0] - q2[0]], [p2[1] - p1[1], q1[1] - q2[1]]])
+    b = np.array([q1[0] - p1[0], q1[1] - p1[1]])
+    t = np.linalg.solve(A, b)
+    return p1 + t[0] * (p2 - p1)
+
+
+def get_triangle_area(a, b, c):
+    return 0.5 * abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]))
+
+
 # Source: https://stackoverflow.com/a/74620309
-def get_best_fit_ngon(points: np.ndarray, n: int = 4) -> np.ndarray:
-    """Get the NumPy coordinate array forming the best fit convex n-gon
+def get_best_fit_polygon(points: ArrayLike, n: int) -> np.ndarray:
+    """Get the NumPy coordinate array forming the best fit convex polygon
     for a collection of (unordered) points.
 
     Args:
-        points (np.ndarray):  N x 2 array of points.
-        n (int, optional): Number of sides of best-fit polygon. Defaults to 4.
+        points (ArrayLike):  N x 2 array of points.
+        n (int, optional): Number of sides of best-fit polygon.
 
     Raises:
         ValueError: If the best fit n-gon cannot be found.
+        ValueError: If n is less than 3.
+        ValueError: If the number of points is less than n.
 
     Returns:
         np.ndarray: N x 2 array of points representing the polygon.
     """
+    if n < 3:
+        raise ValueError("Best fit n-gon must have at least 3 sides.")
+
+    if len(points) < n:
+        raise ValueError(
+            f"Cannot find best fit n-gon with {n} sides for {len(points)} points."
+        )
+
+    points = np.array(points, dtype=np.float32)
     hull = cv2.convexHull(points)
-    hull = np.array(hull).reshape((len(hull), 2))
-    hull = [sympy.Point(*pt) for pt in hull]
+    hull = np.array(hull).reshape((len(hull), 2)).astype(np.float32)
 
     # run until we cut down to n vertices
     while len(hull) > n:
@@ -212,46 +282,67 @@ def get_best_fit_ngon(points: np.ndarray, n: int = 4) -> np.ndarray:
             adj_idx_1 = (edge_idx_1 - 1) % len(hull)
             adj_idx_2 = (edge_idx_1 + 2) % len(hull)
 
-            edge_pt_1 = sympy.Point(*hull[edge_idx_1])
-            edge_pt_2 = sympy.Point(*hull[edge_idx_2])
-            adj_pt_1 = sympy.Point(*hull[adj_idx_1])
-            adj_pt_2 = sympy.Point(*hull[adj_idx_2])
+            edge_pt_1 = hull[edge_idx_1]
+            edge_pt_2 = hull[edge_idx_2]
+            adj_pt_1 = hull[adj_idx_1]
+            adj_pt_2 = hull[adj_idx_2]
 
-            subpoly = sympy.Polygon(adj_pt_1, edge_pt_1, edge_pt_2, adj_pt_2)
-            angle1 = subpoly.angles[edge_pt_1]
-            angle2 = subpoly.angles[edge_pt_2]
+            angle1 = get_interior_angle(adj_pt_1, edge_pt_1, edge_pt_2)
+            angle2 = get_interior_angle(edge_pt_2, edge_pt_1, adj_pt_2)
 
             # we need to first make sure that the sum of the interior angles the edge
             # makes with the two adjacent edges is more than 180°
-            if sympy.N(angle1 + angle2) <= sympy.pi:
+            if angle1 + angle2 <= np.pi:
                 continue
 
             # find the new vertex if we delete this edge
-            adj_edge_1 = sympy.Line(adj_pt_1, edge_pt_1)
-            adj_edge_2 = sympy.Line(edge_pt_2, adj_pt_2)
-            intersect = adj_edge_1.intersection(adj_edge_2)[0]
+            intersection_pt = get_intersection_point(
+                adj_pt_1, edge_pt_1, edge_pt_2, adj_pt_2
+            )
 
-            # the area of the triangle we'll be adding
-            area = sympy.N(sympy.Triangle(edge_pt_1, intersect, edge_pt_2).area)
-            # should be the lowest
+            # the area of the triangle we'll be adding should be the lowest
+            area = get_triangle_area(edge_pt_1, intersection_pt, edge_pt_2)
             if best_candidate and best_candidate[1] < area:
                 continue
 
             # delete the edge and add the intersection of adjacent edges to the hull
             better_hull = list(hull)
-            better_hull[edge_idx_1] = intersect
+            better_hull[edge_idx_1] = intersection_pt
             del better_hull[edge_idx_2]
             best_candidate = (better_hull, area)
 
         if not best_candidate:
-            raise ValueError("Could not find the best fit n-gon!")
+            raise ValueError("Failed to find best candidate")
 
-        hull = best_candidate[0]
+        hull = np.array(best_candidate[0], dtype=np.float32)
 
-    hull = [(int(x), int(y)) for x, y in hull]
     hull = np.array(hull, dtype=np.float32)
 
     return hull
+
+
+def get_detection_best_fit_quad(
+    detection: Detection, logger: RcutilsLogger
+) -> np.ndarray:
+    mask = detection.mask
+    mask_points = [attrgetter("x", "y")(point) for point in mask.data]
+
+    try:
+        start_time = rclpy.clock.Clock().now()
+        polygon_points = get_best_fit_polygon(mask_points, n=4)
+        if len(polygon_points) < 4:
+            raise ValueError(
+                f"Best fit ngon has less than 4 points: {len(polygon_points)}"
+            )
+        end_time = rclpy.clock.Clock().now()
+        logger.info(
+            f"Best fit ngon calculated in {(end_time - start_time).nanoseconds / 1e6:.2f} ms"
+        )
+    except ValueError as e:
+        logger.warn(f"Failed to get best fit ngon: {e}, using OBB instead")
+        _, polygon_points = polygon_to_obb(mask_points)
+
+    return polygon_points
 
 
 def filter_detections_by_num_points(

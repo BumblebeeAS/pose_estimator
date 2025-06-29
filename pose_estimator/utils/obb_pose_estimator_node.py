@@ -83,7 +83,7 @@ class OBBPoseEstimator(PoseEstimatorNode):
 
             try:
                 rvec, tvec = get_object_pose_from_detection_using_obb(
-                    self.camera, object_polygon, detection
+                    self.camera, object_polygon, detection, self.get_logger()
                 )
             except Exception as e:
                 self.get_logger().warn(f"Pose estimation failed: {e}")

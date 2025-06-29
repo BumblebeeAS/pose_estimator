@@ -2,8 +2,12 @@ from typing import Tuple
 
 import cv2
 import numpy as np
+from rclpy.impl.rcutils_logger import RcutilsLogger
 
-from pose_estimator.utils.detections import get_detection_obb, match_polygon_points
+from pose_estimator.utils.detections import (
+    get_detection_best_fit_quad,
+    match_polygon_points,
+)
 from pose_estimator.utils.PinholeCamera import PinholeCamera
 
 
@@ -177,7 +181,10 @@ def estimate_covariance(
 
 
 def get_object_pose_from_detection_using_obb(
-    camera: PinholeCamera, object_polygon: np.ndarray, detection: object
+    camera: PinholeCamera,
+    object_polygon: np.ndarray,
+    detection: object,
+    logger: RcutilsLogger,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Estimates pose of a detection using the oriented bounding box of its mask.
     The most naive method of pose estimation, but works well when the following
@@ -200,7 +207,7 @@ def get_object_pose_from_detection_using_obb(
     Returns:
         Tuple[np.ndarray, np.ndarray]: (rvec, tvec)
     """
-    _, detected_polygon = get_detection_obb(detection)
+    detected_polygon = get_detection_best_fit_quad(detection, logger)
     object_points, image_points = match_polygon_points(object_polygon, detected_polygon)
     object_points = np.hstack([object_points, np.zeros((object_points.shape[0], 1))])
 
