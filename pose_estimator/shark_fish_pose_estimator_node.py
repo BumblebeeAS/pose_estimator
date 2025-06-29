@@ -1,12 +1,14 @@
 import rclpy
 
 from pose_estimator.config.object_points import SYMBOL_OBJECT_POINTS_DICT
-from pose_estimator.utils.obb_pose_estimator_node import OBBPoseEstimator
+from pose_estimator.utils.best_fit_quad_pose_estimator_node import (
+    BestFitQuadPoseEstimator,
+)
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = OBBPoseEstimator(
+    node = BestFitQuadPoseEstimator(
         SYMBOL_OBJECT_POINTS_DICT,
         {"reef_shark": "trash/shark", "sawfish": "trash/fish"},
     )

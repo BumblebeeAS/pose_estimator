@@ -8,19 +8,16 @@ from pose_estimator.utils.detections import (
     filter_detections_by_num_points,
     get_best_detections_per_class,
 )
-from pose_estimator.utils.pose_estimator import get_object_pose_from_detection_using_obb
+from pose_estimator.utils.pose_estimator import (
+    get_object_pose_from_detection_using_best_fit_quad,
+)
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 
 
-class OBBPoseEstimator(PoseEstimatorNode):
+class BestFitQuadPoseEstimator(PoseEstimatorNode):
     """
-    Estimates pose of each detection using oriented bounding boxes of their
-    their individual masks. The most naive method of pose estimation, but works
-    well when the following conditions are met:
-
-    - The object is not rotated more than 45 degrees from its upright orientation.
-    - The object is rectangular.
-    - Perspective does not significantly affect the object's aspect ratio.
+    Estimates pose of each detection using the best-fit quadrilateral of the boundary
+    of its mask. See `get_object_pose_from_detection_using_best_fit_quad` for details.
 
     Note that this node only estimates the pose for the BEST detection of each class.
 
@@ -34,7 +31,7 @@ class OBBPoseEstimator(PoseEstimatorNode):
         object_points: Dict[str, List[List[float]]],
         frame_name_remap: Dict[str, str],
     ):
-        """Create a OBBPoseEstimator node.
+        """Create a BestFitQuadPoseEstimator node.
 
         Args:
             object_points (Dict[str, List[List[float]]]): Dictionary mapping class names to their object points.
@@ -43,7 +40,7 @@ class OBBPoseEstimator(PoseEstimatorNode):
         Raises:
             AssertionError: If the keys of object_points and frame_name_remap do not match.
         """
-        super().__init__("obb_pose_estimator_node")
+        super().__init__("best_fit_quad_pose_estimator_node")
 
         assert set(object_points.keys()) == set(frame_name_remap.keys()), (
             "Object points and frame name remap must have the same keys.",
@@ -82,7 +79,7 @@ class OBBPoseEstimator(PoseEstimatorNode):
             object_polygon = self.object_points[detection.class_name]
 
             try:
-                rvec, tvec = get_object_pose_from_detection_using_obb(
+                rvec, tvec = get_object_pose_from_detection_using_best_fit_quad(
                     self.camera, object_polygon, detection, self.get_logger()
                 )
             except Exception as e:

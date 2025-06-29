@@ -180,16 +180,17 @@ def estimate_covariance(
     return np.linalg.inv(jacobian.T @ jacobian)
 
 
-def get_object_pose_from_detection_using_obb(
+def get_object_pose_from_detection_using_best_fit_quad(
     camera: PinholeCamera,
     object_polygon: np.ndarray,
     detection: object,
     logger: RcutilsLogger,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Estimates pose of a detection using the oriented bounding box of its mask.
-    The most naive method of pose estimation, but works well when the following
-    conditions are met:
+    """Estimates pose from a detection using the best-fit quadrilateral of the boundary
+    of its mask. The most naive method of pose estimation, but works well when the
+    following conditions are met:
 
+    - The object is fully in the camera's field of view.
     - The object is not rotated more than 45 degrees from its upright orientation.
     - The object is rectangular.
     - Perspective does not significantly affect the object's aspect ratio.
