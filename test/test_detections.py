@@ -11,12 +11,15 @@ from pose_estimator.utils.detections import (
 )
 
 
+def plot_polygon(ax: Axes, points: ArrayLike) -> None:
+    polygon = np.vstack([points, points[0]])  # Close the polygon
+    ax.plot(polygon[:, 0], polygon[:, 1], marker="o", ls="-")
+
+
 def plot_quadrilaterals(ax: Axes, points: ArrayLike) -> None:
     for i in range(0, len(points), 4):
         quad = points[i : i + 4]
-        quad = np.vstack([quad, quad[0]])  # Close the quadrilateral
-        ax.plot(quad[:, 0], quad[:, 1])
-        ax.plot(quad[:, 0], quad[:, 1], "bo")
+        plot_polygon(ax, quad)
 
     points = np.array(points)
     label_offset = (max(points[:, 0]) - min(points[:, 0])) * 0.02
