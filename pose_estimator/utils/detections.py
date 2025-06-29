@@ -276,39 +276,21 @@ def get_best_fit_polygon(points: ArrayLike, n: int) -> np.ndarray:
         best_candidate = None
 
         # for all edges in hull ( <edge_idx_1>, <edge_idx_2> ) ->
-        for edge_idx_1 in range(len(hull)):
-            edge_idx_2 = (edge_idx_1 + 1) % len(hull)
+        for pt_idx_2 in range(len(hull)):
+            pt_idx_1 = (pt_idx_2 - 1) % len(hull)
+            pt_idx_3 = (pt_idx_2 + 1) % len(hull)
 
-            adj_idx_1 = (edge_idx_1 - 1) % len(hull)
-            adj_idx_2 = (edge_idx_1 + 2) % len(hull)
-
-            edge_pt_1 = hull[edge_idx_1]
-            edge_pt_2 = hull[edge_idx_2]
-            adj_pt_1 = hull[adj_idx_1]
-            adj_pt_2 = hull[adj_idx_2]
-
-            angle1 = get_interior_angle(adj_pt_1, edge_pt_1, edge_pt_2)
-            angle2 = get_interior_angle(edge_pt_2, edge_pt_1, adj_pt_2)
-
-            # we need to first make sure that the sum of the interior angles the edge
-            # makes with the two adjacent edges is more than 180°
-            if angle1 + angle2 <= np.pi:
-                continue
-
-            # find the new vertex if we delete this edge
-            intersection_pt = get_intersection_point(
-                adj_pt_1, edge_pt_1, edge_pt_2, adj_pt_2
-            )
-
-            # the area of the triangle we'll be adding should be the lowest
-            area = get_triangle_area(edge_pt_1, intersection_pt, edge_pt_2)
+            # the area of the triangle we'll be removing should be the lowest
+            pt_1 = hull[pt_idx_1]
+            pt_2 = hull[pt_idx_2]
+            pt_3 = hull[pt_idx_3]
+            area = get_triangle_area(pt_1, pt_2, pt_3)
             if best_candidate and best_candidate[1] < area:
                 continue
 
-            # delete the edge and add the intersection of adjacent edges to the hull
+            # delete the point
             better_hull = list(hull)
-            better_hull[edge_idx_1] = intersection_pt
-            del better_hull[edge_idx_2]
+            del better_hull[pt_idx_2]
             best_candidate = (better_hull, area)
 
         if not best_candidate:
