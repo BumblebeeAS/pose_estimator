@@ -1,6 +1,7 @@
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import String
 from yolo_msgs.msg import DetectionArray
 
@@ -25,9 +26,14 @@ class SharkFishEstimator(Node):
             self.get_parameter("output_string_topic").get_parameter_value().string_value
         )
         self.detections_sub = self.create_subscription(
-            DetectionArray, detections_topic, self.detections_callback, 1
+            DetectionArray,
+            detections_topic,
+            self.detections_callback,
+            qos_profile_sensor_data,
         )
-        self.string_publisher = self.create_publisher(String, output_string_topic, 10)
+        self.string_publisher = self.create_publisher(
+            String, output_string_topic, qos_profile_sensor_data
+        )
 
     def detections_callback(self, detections_msg: DetectionArray):
         # Only include relevant classes
