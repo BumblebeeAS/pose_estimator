@@ -4,6 +4,7 @@ import message_filters
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
+from foxglove_msgs.msg import ImageAnnotations
 from message_filters import TimeSynchronizer
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
@@ -19,6 +20,7 @@ from pose_estimator.utils.detections import (
     get_top_k_detections_per_class,
     match_polygon_points_sequence,
 )
+from pose_estimator.utils.image_annotations import get_image_annotations
 from pose_estimator.utils.pose_estimator import get_object_pose
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 
@@ -53,7 +55,16 @@ class SlalomPoseEstimator(PoseEstimatorNode):
         )
         self.time_synchronizer.registerCallback(self.detections_callback)
 
+        # Debug annotations publisher
+        self.debug_annotations_publisher = self.create_publisher(
+            ImageAnnotations,
+            "debug_annotations",
+            qos_profile=qos_profile_sensor_data,
+        )
+
     def detections_callback(self, detections_msg: DetectionArray, depth_msg: Image):
+        start_time = self.get_clock().now()
+
         # We require at least 3 points for polygon creation
         filtered_detections = filter_detections_by_num_points(detections_msg, 3)
 
@@ -61,6 +72,7 @@ class SlalomPoseEstimator(PoseEstimatorNode):
         depth_img = self.cv_bridge.imgmsg_to_cv2(depth_msg, desired_encoding="32FC1")
 
         def process_pole_detections(detections: List[Detection]):
+            """Get pole OBBs and pole depths."""
             pole_obbs = [get_detection_obb(det)[1] for det in detections]
             resolution_wh_list = [
                 (det.mask.width, det.mask.height) for det in detections
@@ -169,6 +181,11 @@ class SlalomPoseEstimator(PoseEstimatorNode):
                     SLALOM_GATE_OBJECT_POINTS_DICT["white_pole_right"]
                 )
 
+        image_annotations = get_image_annotations(
+            detections_msg.header, detected_polygons_dict.values()
+        )
+        self.debug_annotations_publisher.publish(image_annotations)
+
         # Estimate pose for each layer
         for layer in detected_polygons_dict.keys():
             detected_polygons = detected_polygons_dict[layer]
@@ -191,6 +208,10 @@ class SlalomPoseEstimator(PoseEstimatorNode):
                 # for another. Setting a lower max re-projection error may result in a more confident
                 # pose estimator, but it may also result in no inliers being found.
 
+                # However, the re-projection error cannot be too large here. Otherwise, the slalom
+                # poses from multiple views may be too dispersed and different slalom layers may be
+                # counted as one cluster
+
                 rvec, tvec, inliers = get_object_pose(
                     self.camera, object_points, image_points, max_reprojection_error=10
                 )
@@ -211,6 +232,10 @@ class SlalomPoseEstimator(PoseEstimatorNode):
                 detections_msg.header,
                 f"slalom_layer_{layer}",
             )
+
+        end_time = self.get_clock().now()
+        elapsed_time = (end_time - start_time).nanoseconds / 1e6
+        self.get_logger().info(f"Processed detections in {elapsed_time:.2f} ms")
 
 
 def main(args=None):
