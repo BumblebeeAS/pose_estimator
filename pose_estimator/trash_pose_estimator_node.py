@@ -89,6 +89,9 @@ class TrashPoseEstimator(PoseEstimatorNode):
         rvec = np.zeros((3, 1), dtype=np.float32)
 
         for class_name, detections in best_detections.items():
+            # Sort detections by their track ID
+            detections = sorted(detections, key=lambda d: d.id)
+
             for detection in detections:
                 detection_centroid = get_detection_centroid(detection)
                 X, Y = backproject_pixel(
