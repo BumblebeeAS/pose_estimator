@@ -169,7 +169,7 @@ class TrashTablePoseEstimator(PoseEstimatorNode):
         try:
             # We set a large max re-projection error as the segmentation masks are noisy and
             # the matched points for one detection may be at an offset from the matched points
-            # for another. Settiall_object_pointsng a lower max re-projection error may result in a more confident
+            # for another. Setting a lower max re-projection error may result in a more confident
             # pose estimator, but it may also result in no inliers being found.
 
             rvec, tvec, inliers = get_object_pose(
