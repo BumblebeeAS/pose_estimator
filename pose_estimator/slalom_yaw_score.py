@@ -4,7 +4,7 @@ import message_filters
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import  Float32MultiArray # TODO: use custom message
 from tf_transformations import euler_from_quaternion
 from yolo_msgs.msg import Detection, DetectionArray
 
@@ -17,18 +17,6 @@ from pose_estimator.utils.detections import (
 class SlalomYawScore(Node):
     def __init__(self):
         super().__init__("slalom_yaw_score")
-
-        image_width = (
-            self.declare_parameter("image_width", 640)
-            .get_parameter_value()
-            .integer_value
-        )
-        image_height = (
-            self.declare_parameter("image_height", 480)
-            .get_parameter_value()
-            .integer_value
-        )
-        self.image_center = (image_width / 2, image_height / 2)
 
         detections_topic = (
             self.declare_parameter("detections_topic", "slalom/yolo/detections")
@@ -50,7 +38,7 @@ class SlalomYawScore(Node):
         )
         self.time_sync.registerCallback(self.callback)
 
-        self.publisher = self.create_publisher(String, "slalom/yaw_score", 10)
+        self.publisher = self.create_publisher(Float32MultiArray, "slalom/yaw_score", 10)
 
     def callback(self, detections: DetectionArray, odom: Odometry):
         filtered_detections = filter_detections_by_num_points(detections, 3)
@@ -60,8 +48,8 @@ class SlalomYawScore(Node):
         yaw = self._get_yaw_from_odom(odom)
         score = self._compute_score(red_pole_detections)
 
-        yaw_score_msg = String()
-        yaw_score_msg.data = f"{yaw}_{score}"
+        yaw_score_msg = Float32MultiArray()
+        yaw_score_msg.data = [float(yaw), float(score)]
         self.publisher.publish(yaw_score_msg)
 
     def _get_yaw_from_odom(self, odom: Odometry) -> float:
@@ -81,8 +69,9 @@ class SlalomYawScore(Node):
         score = 0
         for det in detections:
             bbox_center_position_x = det.bbox.center.position.x
-            dist = abs(bbox_center_position_x - self.image_center[0])
-            score += det.score / 100 - dist
+            img_center_x = det.mask.width / 2.0
+            dist = abs(bbox_center_position_x - img_center_x)
+            score += det.score - dist / img_center_x # should be between 0 and 1 for score and dist penalty
         return score
 
 
