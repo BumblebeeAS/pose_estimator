@@ -25,6 +25,7 @@ def get_pose_with_covariance_stamped(
 def get_transform_stamped(
     header: Header, child_frame_id: str, t: ArrayLike, q: ArrayLike
 ):
+    """Gets transform stamped message, where q is in ROS format [x, y, z, w]."""
     transform_stamped = TransformStamped()
     transform_stamped.header = header
     transform_stamped.child_frame_id = child_frame_id

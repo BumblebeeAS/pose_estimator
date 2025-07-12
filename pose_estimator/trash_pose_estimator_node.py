@@ -4,14 +4,17 @@ import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from message_filters import TimeSynchronizer
 from rclpy.qos import qos_profile_sensor_data
+from transforms3d.euler import euler2quat
 from yolo_msgs.msg import DetectionArray
 
 from pose_estimator.utils.detections import (
     get_detection_centroid,
+    get_detection_obb,
     get_top_k_detections_per_class,
 )
 from pose_estimator.utils.pose_estimator import backproject_pixel
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.ros_messages import get_transform_stamped
 
 
 class TrashPoseEstimator(PoseEstimatorNode):
@@ -60,15 +63,18 @@ class TrashPoseEstimator(PoseEstimatorNode):
         header = detection_array_msg.header
         counts = {"bottle": 0, "ladle": 0}
 
-        # We are unable to estimate orientation, so we set it to identity
-        rvec = np.zeros((3, 1), dtype=np.float32)
-
         for class_name, detections in best_detections.items():
             # Sort detections by their track ID
             detections = sorted(detections, key=lambda d: d.id)
 
             for detection in detections:
                 detection_centroid = get_detection_centroid(detection)
+                angle, _ = get_detection_obb(detection)
+
+                # Returns quat in ROS format [x, y, z, w]
+                qw, qx, qy, qz = euler2quat(0, 0, np.deg2rad(angle))
+                quat = [qx, qy, qz, qw]
+
                 X, Y = backproject_pixel(
                     detection_centroid[0],
                     detection_centroid[1],
@@ -83,7 +89,10 @@ class TrashPoseEstimator(PoseEstimatorNode):
                 else:
                     frame_name = class_name
 
-                self.publish_transform(tvec, rvec, header, frame_name)
+                transform_stamped = get_transform_stamped(
+                    header, frame_name, tvec.squeeze(), quat
+                )
+                self.tf_broadcaster.sendTransform(transform_stamped)
 
 
 def main(args=None):
