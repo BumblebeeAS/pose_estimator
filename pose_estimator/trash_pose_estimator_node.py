@@ -10,33 +10,8 @@ from pose_estimator.utils.detections import (
     get_detection_centroid,
     get_top_k_detections_per_class,
 )
+from pose_estimator.utils.pose_estimator import backproject_pixel
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
-
-
-def backproject_pixel(
-    x: float, y: float, Z: float, K: np.ndarray
-) -> tuple[float, float]:
-    """
-    Solve w * [x, y, 1]^T = K * [X, Y, Z]^T for X, Y, given Z, where
-    w is the unknown scale factor.
-
-    Args:
-        x, y: Image coordinates
-        Z: Known depth
-        K: 3x3 camera intrinsic matrix
-
-    Raises:
-        np.linalg.LinAlgError: If inverse of K cannot be computed.
-
-    Returns:
-        X, Y: 3D coordinates in the camera frame
-    """
-    pixel = np.array([x, y, 1.0])
-    K_inv = np.linalg.inv(K)
-    direction = K_inv @ pixel
-    direction *= Z / direction[2]
-    X, Y = direction[0], direction[1]
-    return X, Y
 
 
 class TrashPoseEstimator(PoseEstimatorNode):
