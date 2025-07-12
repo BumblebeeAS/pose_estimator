@@ -42,7 +42,7 @@ class TrashPoseEstimator2(PoseEstimatorNode):
             self, Odometry, input_odom_topic, qos_profile=qos_profile_sensor_data
         )
         self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
-            [detections_subscription, odom_subscription], 10, slop=0.1
+            [detections_subscription, odom_subscription], 20, slop=0.1
         )
         self.time_synchronizer.registerCallback(self.detections_callback)
 
@@ -51,7 +51,7 @@ class TrashPoseEstimator2(PoseEstimatorNode):
 
         self.has_setup = False
 
-    def setup(self):
+    def setup(self) -> bool:
         valid, odom_msg = wait_for_message(Odometry, self, "/auv4/nav/odom_ned")
         if not valid:
             raise ValueError("Failed to get camera info")
@@ -62,13 +62,13 @@ class TrashPoseEstimator2(PoseEstimatorNode):
             seconds=odom_msg.header.stamp.sec, nanoseconds=odom_msg.header.stamp.nanosec
         )
 
-        while not self.tf_buffer.can_transform(
+        if not self.tf_buffer.can_transform(
             "auv4/bot_cam_optical", "bottle_0/clustered", Time()
         ) or not self.tf_buffer.can_transform(
             "auv4/base_link_ned", "auv4/bot_cam_optical", Time()
         ):
             self.get_logger().info("Waiting for transforms...")
-            continue
+            return False
 
         object_to_camera_transform = self.tf_buffer.lookup_transform(
             "auv4/bot_cam_optical", "bottle_0/clustered", Time()
@@ -87,13 +87,16 @@ class TrashPoseEstimator2(PoseEstimatorNode):
         self.get_logger().info(
             f"{object_to_camera_depth} + {self.camera_to_robot_depth} + {robot_to_surface_depth} = {self.object_to_surface_depth}"
         )
+        return True
 
     def detections_callback(
         self, detection_array_msg: DetectionArray, odom_msg: Odometry
     ):
         if not self.has_setup:
             self.get_logger().info("Setting up the pose estimator...")
-            self.setup()
+            success = self.setup()
+            if not success:
+                return
             self.has_setup = True
 
         start_time = self.get_clock().now()
