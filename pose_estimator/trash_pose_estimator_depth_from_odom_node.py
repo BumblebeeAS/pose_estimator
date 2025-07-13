@@ -17,17 +17,34 @@ from pose_estimator.utils.pose_estimator import backproject_pixel
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 
 
-class TrashPoseEstimator2(PoseEstimatorNode):
+class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
     def __init__(self):
         super().__init__("trash_pose_estimator_node2")
 
         input_detections_topic = (
-            self.declare_parameter("input_detections_topic", "yolo/detections")
+            self.declare_parameter(
+                "input_detections_topic", rclpy.Parameter.Type.STRING
+            )
             .get_parameter_value()
             .string_value
         )
         input_odom_topic = (
-            self.declare_parameter("input_odom_topic", "/auv4/nav/odom_ned")
+            self.declare_parameter("input_odom_topic", rclpy.Parameter.Type.STRING)
+            .get_parameter_value()
+            .string_value
+        )
+        self.odom_frame = (
+            self.declare_parameter("odom_frame", rclpy.Parameter.Type.STRING)
+            .get_parameter_value()
+            .string_value
+        )
+        self.camera_frame = (
+            self.declare_parameter("camera_frame", rclpy.Parameter.Type.STRING)
+            .get_parameter_value()
+            .string_value
+        )
+        self.trash_frame_clustered = (
+            self.declare_parameter("trash_frame_clustered", rclpy.Parameter.Type.STRING)
             .get_parameter_value()
             .string_value
         )
@@ -52,29 +69,29 @@ class TrashPoseEstimator2(PoseEstimatorNode):
         self.has_setup = False
 
     def setup(self) -> bool:
-        valid, odom_msg = wait_for_message(Odometry, self, "/auv4/nav/odom_ned")
+        valid, odom_msg = wait_for_message(Odometry, self, self.odom_frame)
         if not valid:
             raise ValueError("Failed to get camera info")
         odom_msg: Odometry
 
         # TODO: @advaypakhale use odom time instead of current time for transforms
-        odom_time = Time(
-            seconds=odom_msg.header.stamp.sec, nanoseconds=odom_msg.header.stamp.nanosec
-        )
+        # odom_time = Time(
+        #     seconds=odom_msg.header.stamp.sec, nanoseconds=odom_msg.header.stamp.nanosec
+        # )
 
         if not self.tf_buffer.can_transform(
-            "auv4/bot_cam_optical", "bottle_0/clustered", Time()
+            self.camera_frame, self.trash_frame_clustered, Time()
         ) or not self.tf_buffer.can_transform(
-            "auv4/base_link_ned", "auv4/bot_cam_optical", Time()
+            self.odom_frame, self.camera_frame, Time()
         ):
             self.get_logger().info("Waiting for transforms...")
             return False
 
         object_to_camera_transform = self.tf_buffer.lookup_transform(
-            "auv4/bot_cam_optical", "bottle_0/clustered", Time()
+            self.camera_frame, self.trash_frame_clustered, Time()
         )
         camera_to_robot_transform = self.tf_buffer.lookup_transform(
-            "auv4/base_link_ned", "auv4/bot_cam_optical", Time()
+            self.odom_frame, self.camera_frame, Time()
         )
 
         object_to_camera_depth = object_to_camera_transform.transform.translation.z
@@ -149,7 +166,7 @@ class TrashPoseEstimator2(PoseEstimatorNode):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TrashPoseEstimator2()
+    node = TrashPoseEstimatorDepthFromOdom()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

@@ -17,7 +17,7 @@ from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 from pose_estimator.utils.ros_messages import get_transform_stamped
 
 
-class TrashPoseEstimator(PoseEstimatorNode):
+class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
     def __init__(self):
         super().__init__("trash_pose_estimator_node")
 
@@ -97,7 +97,7 @@ class TrashPoseEstimator(PoseEstimatorNode):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TrashPoseEstimator()
+    node = TrashPoseEstimatorDepthFromTable()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
