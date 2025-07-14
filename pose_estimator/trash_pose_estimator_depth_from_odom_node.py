@@ -28,7 +28,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
             .get_parameter_value()
             .string_value
         )
-        input_odom_topic = (
+        self.input_odom_topic = (
             self.declare_parameter("input_odom_topic", rclpy.Parameter.Type.STRING)
             .get_parameter_value()
             .string_value
@@ -56,7 +56,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
             qos_profile=qos_profile_sensor_data,
         )
         odom_subscription = message_filters.Subscriber(
-            self, Odometry, input_odom_topic, qos_profile=qos_profile_sensor_data
+            self, Odometry, self.input_odom_topic, qos_profile=qos_profile_sensor_data
         )
         self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
             [detections_subscription, odom_subscription], 20, slop=0.1
@@ -69,7 +69,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
         self.has_setup = False
 
     def setup(self) -> bool:
-        valid, odom_msg = wait_for_message(Odometry, self, self.odom_frame)
+        valid, odom_msg = wait_for_message(Odometry, self, self.input_odom_topic)
         if not valid:
             raise ValueError("Failed to get camera info")
         odom_msg: Odometry
