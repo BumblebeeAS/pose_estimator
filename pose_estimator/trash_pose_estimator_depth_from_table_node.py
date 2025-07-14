@@ -19,7 +19,7 @@ from pose_estimator.utils.ros_messages import get_transform_stamped
 
 class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
     def __init__(self):
-        super().__init__("trash_pose_estimator_node")
+        super().__init__("trash_pose_estimator_depth_from_table_node")
 
         input_detections_topic = (
             self.declare_parameter("input_detections_topic", "yolo/detections")

@@ -19,7 +19,7 @@ from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 
 class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
     def __init__(self):
-        super().__init__("trash_pose_estimator_node2")
+        super().__init__("trash_pose_estimator_depth_from_odom_node")
 
         input_detections_topic = (
             self.declare_parameter(
