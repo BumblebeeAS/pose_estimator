@@ -84,7 +84,7 @@ class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
                 tvec = np.array([X, Y, object_depth]).reshape((3, 1))
 
                 if class_name in counts:
-                    frame_name = f"{class_name}_{counts[class_name]}"
+                    frame_name = f"{class_name}_{counts[class_name]}/from_table"
                     counts[class_name] += 1
                 else:
                     frame_name = class_name

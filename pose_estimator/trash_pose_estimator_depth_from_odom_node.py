@@ -148,7 +148,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
                 tvec = np.array([X, Y, object_to_camera_depth]).reshape((3, 1))
 
                 if class_name in counts:
-                    frame_name = f"{class_name}_2_{counts[class_name]}"
+                    frame_name = f"{class_name}_{counts[class_name]}/from_odom"
                     counts[class_name] += 1
                 else:
                     frame_name = class_name
@@ -156,9 +156,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
                 self.publish_transform(tvec, rvec, header, frame_name)
 
         end_time = self.get_clock().now()
-        elapsed_time = (
-            end_time - start_time
-        ).nanoseconds / 1e6  # Convert to milliseconds
+        elapsed_time = (end_time - start_time).nanoseconds / 1e6
         self.get_logger().info(
             f"Processed {len(detection_array_msg.detections)} detections in {elapsed_time:.2f} ms"
         )
