@@ -84,7 +84,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
         ) or not self.tf_buffer.can_transform(
             self.odom_frame, self.camera_frame, Time()
         ):
-            self.get_logger().info("Waiting for transforms...")
+            # self.get_logger().info("Waiting for transforms...")
             return False
 
         object_to_camera_transform = self.tf_buffer.lookup_transform(
@@ -110,7 +110,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
         self, detection_array_msg: DetectionArray, odom_msg: Odometry
     ):
         if not self.has_setup:
-            self.get_logger().info("Setting up the pose estimator...")
+            # self.get_logger().info("Setting up the pose estimator...")
             success = self.setup()
             if not success:
                 return
@@ -151,7 +151,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
                     frame_name = f"{class_name}_{counts[class_name]}/from_odom"
                     counts[class_name] += 1
                 else:
-                    frame_name = class_name
+                    frame_name = f"{class_name}/from_odom"
 
                 self.publish_transform(tvec, rvec, header, frame_name)
 
