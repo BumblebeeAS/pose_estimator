@@ -2,6 +2,7 @@ import message_filters
 import numpy as np
 import rclpy
 import tf2_ros
+from bb_perception_msgs.srv import TrashToggleFrame
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
@@ -66,7 +67,37 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
         self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        self.trash_toggle_frame_service = self.create_service(
+            "trash_toggle_frame",
+            "bb_perception_msgs/srv/TrashToggleFrame",
+            self.trash_toggle_frame_callback,
+        )
+
         self.has_setup = False
+
+    def trash_toggle_frame_callback(
+        self, request: TrashToggleFrame.Request, response: TrashToggleFrame.Response
+    ):
+        if not request.enable:
+            self.enabled = False
+            return
+        self.get_logger().info("Enabling trash pose estimator from odom")
+
+        self.trash_frame_clustered = request.trash_frame_clustered
+
+        is_setup_succes = self.setup()
+        response.success = False
+
+        if not is_setup_succes:
+            message = "Failed to setup trash pose estimator from odom."
+            self.get_logger().error(message)
+            response.message = message
+            return response
+
+        self.enabled = True  # only on the enabled when setup_success
+        response.success = True
+        response.message = "Trash pose estimator from odom enabled successfully."
+        return response
 
     def setup(self) -> bool:
         valid, odom_msg = wait_for_message(Odometry, self, self.input_odom_topic)
@@ -109,12 +140,8 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
     def detections_callback(
         self, detection_array_msg: DetectionArray, odom_msg: Odometry
     ):
-        if not self.has_setup:
-            # self.get_logger().info("Setting up the pose estimator...")
-            success = self.setup()
-            if not success:
-                return
-            self.has_setup = True
+        if not self.enabled:
+            return
 
         start_time = self.get_clock().now()
 
