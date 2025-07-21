@@ -68,19 +68,18 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.trash_toggle_frame_service = self.create_service(
-            "trash_toggle_frame",
-            "bb_perception_msgs/srv/TrashToggleFrame",
+            TrashToggleFrame,
+            "/auv4/TrashToggleFrame",
             self.trash_toggle_frame_callback,
         )
-
-        self.has_setup = False
 
     def trash_toggle_frame_callback(
         self, request: TrashToggleFrame.Request, response: TrashToggleFrame.Response
     ):
         if not request.enable:
             self.enabled = False
-            return
+            response.success = True
+            return response
         self.get_logger().info("Enabling trash pose estimator from odom")
 
         self.trash_frame_clustered = request.trash_frame_clustered
