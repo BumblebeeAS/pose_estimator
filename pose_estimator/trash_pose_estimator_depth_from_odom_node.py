@@ -44,11 +44,6 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
             .get_parameter_value()
             .string_value
         )
-        self.trash_frame_clustered = (
-            self.declare_parameter("trash_frame_clustered", rclpy.Parameter.Type.STRING)
-            .get_parameter_value()
-            .string_value
-        )
 
         detections_subscription = message_filters.Subscriber(
             self,
@@ -69,33 +64,32 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
 
         self.trash_toggle_frame_service = self.create_service(
             TrashToggleFrame,
-            "/auv4/TrashToggleFrame",
+            "toggle_trash_frame_clustered",
             self.trash_toggle_frame_callback,
         )
+        self.is_enabled = False
 
     def trash_toggle_frame_callback(
         self, request: TrashToggleFrame.Request, response: TrashToggleFrame.Response
     ):
         if not request.enable:
-            self.enabled = False
+            self.is_enabled = False
             response.success = True
             return response
-        self.get_logger().info("Enabling trash pose estimator from odom")
 
         self.trash_frame_clustered = request.trash_frame_clustered
 
-        is_setup_succes = self.setup()
-        response.success = False
+        is_setup_success = self.setup()
 
-        if not is_setup_succes:
+        if not is_setup_success:
             message = "Failed to setup trash pose estimator from odom."
             self.get_logger().error(message)
+            response.success = False
             response.message = message
             return response
 
-        self.enabled = True  # only on the enabled when setup_success
+        self.is_enabled = True
         response.success = True
-        response.message = "Trash pose estimator from odom enabled successfully."
         return response
 
     def setup(self) -> bool:
@@ -139,7 +133,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
     def detections_callback(
         self, detection_array_msg: DetectionArray, odom_msg: Odometry
     ):
-        if not self.enabled:
+        if not self.is_enabled:
             return
 
         start_time = self.get_clock().now()
