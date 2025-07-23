@@ -15,7 +15,9 @@ from pose_estimator.utils.detections import (
     order_points_clockwise,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_and_publisher_node import (
+    PoseEstimatorAndPublisherNode,
+)
 
 
 def match_bucket_points(table_detection: Detection, bucket_detections: List[Detection]):
@@ -101,7 +103,7 @@ def match_table_points(
     return table_object_points, table_detected_polygon
 
 
-class TrashTablePoseEstimator(PoseEstimatorNode):
+class TrashTablePoseEstimator(PoseEstimatorAndPublisherNode):
     def __init__(self):
         super().__init__("trash_table_pose_estimator_node")
 

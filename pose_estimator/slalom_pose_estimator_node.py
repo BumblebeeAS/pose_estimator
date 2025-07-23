@@ -225,12 +225,8 @@ class SlalomPoseEstimator(PoseEstimatorNode):
                 self.get_logger().warn(f"Pose estimation failed: {e}")
                 continue
 
-            self.publish_data(
-                tvec,
-                rvec,
-                object_points,
-                detections_msg.header,
-                f"slalom_layer_{layer}",
+            self.publish_transform(
+                tvec, rvec, detections_msg.header, f"slalom_layer_{layer}"
             )
 
         end_time = self.get_clock().now()

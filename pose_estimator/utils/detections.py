@@ -252,11 +252,7 @@ def get_detection_best_fit_quad(
     mask_points = [attrgetter("x", "y")(point) for point in mask.data]
 
     try:
-        start_time = rclpy.clock.Clock().now()
         polygon_points = get_best_fit_polygon(mask_points, n=4)
-        end_time = rclpy.clock.Clock().now()
-        duration_ms = (end_time - start_time).nanoseconds / 1e6
-        logger.info(f"Best-fit polygon calculated in {duration_ms:.2f} ms")
     except ValueError as e:
         logger.warn(f"Failed to get best-fit polygon: {e}, using OBB instead")
         _, polygon_points = polygon_to_obb(mask_points)
