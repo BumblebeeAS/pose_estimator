@@ -83,7 +83,11 @@ class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
                     object_yaw = np.deg2rad(angle)
 
                 else:
-                    # For bucket objects, we want the robot to face the table center
+                    # To be able to deposit the objects, the long edge of the grabber needs to be aligned
+                    # with the long edge of the bucket. This leaves a 180 deg rotation ambiguity. However,
+                    # since we want the thrusters to be as far from the table as possible to minimize
+                    # downwash and the grabber is at the front left of the robot, we align the robot's right
+                    # away from the table.
 
                     table_quat = attrgetter("w", "x", "y", "z")(
                         table_pose_msg.pose.pose.orientation
@@ -93,9 +97,9 @@ class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
                     # The table pose is defined such that the yellow bucket is on the left
                     # and the pink bucket is on the right
                     if class_name == "yellow_bucket":
-                        object_yaw = table_yaw + np.pi / 2
+                        object_yaw = table_yaw - np.pi / 2
                     else:
-                        object_yaw = table_yaw + np.pi + np.pi / 2
+                        object_yaw = table_yaw + np.pi - np.pi / 2
 
                 # Returns quat in ROS format [x, y, z, w]
                 qw, qx, qy, qz = euler2quat(0, 0, object_yaw)
