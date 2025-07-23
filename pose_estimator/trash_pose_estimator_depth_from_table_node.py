@@ -10,16 +10,16 @@ from transforms3d.euler import euler2quat, quat2euler
 from yolo_msgs.msg import DetectionArray
 
 from pose_estimator.utils.detections import (
-    get_detection_centroid,
     get_detection_obb,
     get_top_k_detections_per_class,
 )
-from pose_estimator.utils.pose_estimator import backproject_pixel
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 from pose_estimator.utils.ros_messages import get_transform_stamped
+from pose_estimator.utils.trash_pose_estimator_node import TrashPoseEstimator
+
+_FRAME_SUFFIX = "from_table"
 
 
-class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
+class TrashPoseEstimatorDepthFromTable(TrashPoseEstimator):
     def __init__(self):
         super().__init__("trash_pose_estimator_depth_from_table_node")
 
@@ -63,66 +63,54 @@ class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
             {"bottle": 2, "ladle": 2, "pink_bucket": 1, "yellow_bucket": 1},
         )
         header = detection_array_msg.header
-        counts = {"bottle": 0, "ladle": 0}
 
-        for class_name, detections in best_detections.items():
-            # Sort detections by their track ID
-            detections = sorted(detections, key=lambda d: d.id)
+        track_detections = self.get_track_detections(best_detections, object_depth)
 
-            for detection in detections:
-                detection_centroid = get_detection_centroid(detection)
+        for class_name, detection in track_detections.items():
+            translation = self.get_detection_position(detection, object_depth)
 
-                if class_name in ["bottle", "ladle"]:
-                    # For trash objects, we want the robot to align with the long edge of the object
+            if class_name in ["bottle", "ladle"]:
+                # For trash objects, we want the robot to align with the long edge of the object
 
-                    angle, _ = get_detection_obb(detection)
-                    # Rotate 90 deg more because the object frame's x-axis points along the
-                    # object's short edge but we want the robot to align along the long edge
-                    angle += 90
-                    angle = (angle + 180) % 360 - 180
-                    object_yaw = np.deg2rad(angle)
+                angle, _ = get_detection_obb(detection)
+                # Rotate 90 deg more because the object frame's x-axis points along the
+                # object's short edge but we want the robot to align along the long edge
+                angle += 90
+                angle = (angle + 180) % 360 - 180
+                object_yaw = np.deg2rad(angle)
 
-                else:
-                    # To be able to deposit the objects, the long edge of the grabber needs to be aligned
-                    # with the long edge of the bucket. This leaves a 180 deg rotation ambiguity. However,
-                    # since we want the thrusters to be as far from the table as possible to minimize
-                    # downwash and the grabber is at the front left of the robot, we align the robot's right
-                    # away from the table.
+            else:
+                # To be able to deposit the objects, the long edge of the grabber needs to be aligned
+                # with the long edge of the bucket. This leaves a 180 deg rotation ambiguity. However,
+                # since we want the thrusters to be as far from the table as possible to minimize
+                # downwash and the grabber is at the front left of the robot, we align the robot's right
+                # away from the table.
 
-                    table_quat = attrgetter("w", "x", "y", "z")(
-                        table_pose_msg.pose.pose.orientation
-                    )
-                    table_yaw = quat2euler(table_quat, axes="sxyz")[2]
-
-                    # The table pose is defined such that the yellow bucket is on the left
-                    # and the pink bucket is on the right
-                    if class_name == "yellow_bucket":
-                        object_yaw = table_yaw - np.pi / 2
-                    else:
-                        object_yaw = table_yaw + np.pi - np.pi / 2
-
-                # Returns quat in ROS format [x, y, z, w]
-                qw, qx, qy, qz = euler2quat(0, 0, object_yaw)
-                quat = [qx, qy, qz, qw]
-
-                X, Y = backproject_pixel(
-                    detection_centroid[0],
-                    detection_centroid[1],
-                    object_depth,
-                    self.camera.camera_matrix(),
+                table_quat = attrgetter("w", "x", "y", "z")(
+                    table_pose_msg.pose.pose.orientation
                 )
-                tvec = np.array([X, Y, object_depth]).reshape((3, 1))
+                table_yaw = quat2euler(table_quat, axes="sxyz")[2]
 
-                if class_name in counts:
-                    frame_name = f"{class_name}_{counts[class_name]}/from_table"
-                    counts[class_name] += 1
+                # The table pose is defined such that the yellow bucket is on the left
+                # and the pink bucket is on the right
+                if class_name == "yellow_bucket":
+                    object_yaw = table_yaw - np.pi / 2
                 else:
-                    frame_name = f"{class_name}/from_table"
+                    object_yaw = table_yaw + np.pi - np.pi / 2
 
-                transform_stamped = get_transform_stamped(
-                    header, frame_name, tvec.squeeze(), quat
-                )
-                self.tf_broadcaster.sendTransform(transform_stamped)
+            # Returns quat in ROS format [x, y, z, w]
+            qw, qx, qy, qz = euler2quat(0, 0, object_yaw)
+            quat = [qx, qy, qz, qw]
+
+            if class_name in ["bottle", "ladle"]:
+                frame_name = f"{class_name}_0/{_FRAME_SUFFIX}"
+            else:
+                frame_name = f"{class_name}/{_FRAME_SUFFIX}"
+
+            transform_stamped = get_transform_stamped(
+                header, frame_name, translation, quat
+            )
+            self.tf_broadcaster.sendTransform(transform_stamped)
 
 
 def main(args=None):

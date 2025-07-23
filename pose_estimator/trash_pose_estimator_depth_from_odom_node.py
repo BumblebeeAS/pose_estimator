@@ -10,15 +10,14 @@ from rclpy.time import Time
 from rclpy.wait_for_message import wait_for_message
 from yolo_msgs.msg import DetectionArray
 
-from pose_estimator.utils.detections import (
-    get_detection_centroid,
-    get_top_k_detections_per_class,
-)
-from pose_estimator.utils.pose_estimator import backproject_pixel
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.detections import get_top_k_detections_per_class
+from pose_estimator.utils.trash_pose_estimator_node import TrashPoseEstimator
+
+NUM_LAST_POSITIONS = 100
+_FRAME_SUFFIX = "from_odom"
 
 
-class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
+class TrashPoseEstimatorDepthFromOdom(TrashPoseEstimator):
     def __init__(self):
         super().__init__("trash_pose_estimator_depth_from_odom_node")
 
@@ -148,38 +147,30 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
             {"bottle": 2, "ladle": 2, "pink_bucket": 1, "yellow_bucket": 1},
         )
         header = detection_array_msg.header
-        counts = {"bottle": 0, "ladle": 0}
+
+        track_detections = self.get_track_detections(
+            best_detections, object_to_camera_depth
+        )
 
         # We are unable to estimate orientation, so we set it to identity
         rvec = np.zeros((3, 1), dtype=np.float32)
 
-        for class_name, detections in best_detections.items():
-            # Sort detections by their track ID
-            detections = sorted(detections, key=lambda d: d.id)
+        for class_name, detection in track_detections.items():
+            translation = self.get_detection_position(detection, object_to_camera_depth)
+            tvec = translation.reshape((3, 1))
 
-            for detection in detections:
-                detection_centroid = get_detection_centroid(detection)
-                X, Y = backproject_pixel(
-                    detection_centroid[0],
-                    detection_centroid[1],
-                    object_to_camera_depth,
-                    self.camera.camera_matrix(),
-                )
-                tvec = np.array([X, Y, object_to_camera_depth]).reshape((3, 1))
+            if class_name in ["bottle", "ladle"]:
+                frame_name = f"{class_name}_0/{_FRAME_SUFFIX}"
+            else:
+                frame_name = f"{class_name}/{_FRAME_SUFFIX}"
 
-                if class_name in counts:
-                    frame_name = f"{class_name}_{counts[class_name]}/from_odom"
-                    counts[class_name] += 1
-                else:
-                    frame_name = f"{class_name}/from_odom"
-
-                self.publish_transform(tvec, rvec, header, frame_name)
+            self.publish_transform(tvec, rvec, header, frame_name)
 
         end_time = self.get_clock().now()
         elapsed_time = (end_time - start_time).nanoseconds / 1e6
-        self.get_logger().info(
-            f"Processed {len(detection_array_msg.detections)} detections in {elapsed_time:.2f} ms"
-        )
+        # self.get_logger().info(
+        #     f"Processed {len(detection_array_msg.detections)} detections in {elapsed_time:.2f} ms"
+        # )
 
 
 def main(args=None):
