@@ -8,7 +8,7 @@ from foxglove_msgs.msg import ImageAnnotations
 from message_filters import TimeSynchronizer
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
-from supervision.detection.utils import polygon_to_mask
+from supervision.detection.utils.converters import polygon_to_mask
 from yolo_msgs.msg import Detection, DetectionArray
 
 from pose_estimator.config.object_points import SLALOM_GATE_OBJECT_POINTS_DICT
