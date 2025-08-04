@@ -7,18 +7,20 @@
   <maintainer email="todo@todo.com">todo</maintainer>
   <license>MIT</license>
 
+  <!-- 3rd party -->
+  <exec_depend>foxglove_msgs</exec_depend>
+  <exec_depend>image_transport</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <exec_depend>python3-imutils-pip</exec_depend>
   <exec_depend>python-transforms3d-pip</exec_depend>
+  <exec_depend>python-opencv-contrib-pip</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
 
-  <depend>bb_perception_msgs</depend>
-  <depend>yolo_msgs</depend>
-  <depend>image_transport</depend>
-  <depend>message_filters</depend>
-  <depend>python-opencv-contrib-pip</depend>
-  <depend>python3-imutils-pip</depend>
-  <depend>rosidl_default_generators</depend>
-  <depend>rosidl_default_runtime</depend>
-  <depend>robot_localization</depend>
-  <depend>tf_transformations</depend>
+  <!-- Ours -->
+  <exec_depend>bb_perception_msgs</exec_depend>
+  <exec_depend>image_processing</exec_depend>
+  <exec_depend>yolo_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
