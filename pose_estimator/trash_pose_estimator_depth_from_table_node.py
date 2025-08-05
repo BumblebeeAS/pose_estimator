@@ -13,18 +13,28 @@ from pose_estimator.utils.detections import (
     get_detection_obb,
     get_top_k_detections_per_class,
 )
+from pose_estimator.utils.pose_estimator import get_detection_centroid_position
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 from pose_estimator.utils.ros_messages import get_transform_stamped
-from pose_estimator.utils.trash_pose_estimator_node import TrashPoseEstimator
 
 _FRAME_SUFFIX = "from_table"
 
 
-class TrashPoseEstimatorDepthFromTable(TrashPoseEstimator):
+class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
     def __init__(self):
         super().__init__("trash_pose_estimator_depth_from_table_node")
 
         input_detections_topic = (
-            self.declare_parameter("input_detections_topic", "yolo/detections")
+            self.declare_parameter(
+                "input_detections_topic", rclpy.Parameter.Type.STRING
+            )
+            .get_parameter_value()
+            .string_value
+        )
+        input_track_detections_topic = (
+            self.declare_parameter(
+                "input_track_detections_topic", rclpy.Parameter.Type.STRING
+            )
             .get_parameter_value()
             .string_value
         )
@@ -40,6 +50,12 @@ class TrashPoseEstimatorDepthFromTable(TrashPoseEstimator):
             input_detections_topic,
             qos_profile=qos_profile_sensor_data,
         )
+        track_detections_subscription = message_filters.Subscriber(
+            self,
+            DetectionArray,
+            input_track_detections_topic,
+            qos_profile=qos_profile_sensor_data,
+        )
         table_pose_subscription = message_filters.Subscriber(
             self,
             PoseWithCovarianceStamped,
@@ -47,27 +63,36 @@ class TrashPoseEstimatorDepthFromTable(TrashPoseEstimator):
             qos_profile=qos_profile_sensor_data,
         )
         self.time_synchronizer = TimeSynchronizer(
-            [detections_subscription, table_pose_subscription], 10
+            [
+                detections_subscription,
+                track_detections_subscription,
+                table_pose_subscription,
+            ],
+            10,
         )
         self.time_synchronizer.registerCallback(self.detections_callback)
 
     def detections_callback(
         self,
         detection_array_msg: DetectionArray,
+        track_detection_array_msg: DetectionArray,
         table_pose_msg: PoseWithCovarianceStamped,
     ):
         object_depth = table_pose_msg.pose.pose.position.z
 
-        best_detections = get_top_k_detections_per_class(
+        best_table_detections = get_top_k_detections_per_class(
             detection_array_msg,
-            {"bottle": 2, "ladle": 2, "pink_bucket": 1, "yellow_bucket": 1},
+            {"pink_bucket": 1, "yellow_bucket": 1},
         )
+        best_track_detections = get_top_k_detections_per_class(
+            track_detection_array_msg,
+            {"bottle": 1, "ladle": 1},
+        )
+        best_detections = best_table_detections | best_track_detections
         header = detection_array_msg.header
 
-        track_detections = self.get_track_detections(best_detections, object_depth)
-
-        for class_name, detection in track_detections.items():
-            translation = self.get_detection_position(detection, object_depth)
+        for class_name, detection in best_detections.items():
+            translation = get_detection_centroid_position(detection, object_depth)
 
             if class_name in ["bottle", "ladle"]:
                 # For trash objects, we want the robot to align with the long edge of the object

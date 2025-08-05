@@ -3,9 +3,11 @@ from typing import Tuple
 import cv2
 import numpy as np
 from rclpy.impl.rcutils_logger import RcutilsLogger
+from yolo_msgs.msg import Detection
 
 from pose_estimator.utils.detections import (
     get_detection_best_fit_quad,
+    get_detection_centroid,
     match_polygon_points,
 )
 from pose_estimator.utils.PinholeCamera import PinholeCamera
@@ -35,6 +37,18 @@ def backproject_pixel(
     direction *= Z / direction[2]
     X, Y = direction[0], direction[1]
     return X, Y
+
+
+def get_detection_centroid_position(
+    detection: Detection, camera: PinholeCamera, object_depth: float
+) -> np.ndarray:
+    """Get the position of the detection centroid in the camera frame
+    by backprojecting the pixel with known object depth."""
+    detection_centroid = get_detection_centroid(detection)
+    X, Y = backproject_pixel(
+        detection_centroid[0], detection_centroid[1], object_depth, camera
+    )
+    return np.array([X, Y, object_depth])
 
 
 def get_object_pose(

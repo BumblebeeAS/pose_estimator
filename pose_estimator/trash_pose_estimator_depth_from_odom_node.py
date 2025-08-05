@@ -11,19 +11,27 @@ from rclpy.wait_for_message import wait_for_message
 from yolo_msgs.msg import DetectionArray
 
 from pose_estimator.utils.detections import get_top_k_detections_per_class
-from pose_estimator.utils.trash_pose_estimator_node import TrashPoseEstimator
+from pose_estimator.utils.pose_estimator import get_detection_centroid_position
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 
 NUM_LAST_POSITIONS = 100
 _FRAME_SUFFIX = "from_odom"
 
 
-class TrashPoseEstimatorDepthFromOdom(TrashPoseEstimator):
+class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
     def __init__(self):
         super().__init__("trash_pose_estimator_depth_from_odom_node")
 
         input_detections_topic = (
             self.declare_parameter(
                 "input_detections_topic", rclpy.Parameter.Type.STRING
+            )
+            .get_parameter_value()
+            .string_value
+        )
+        input_track_detections_topic = (
+            self.declare_parameter(
+                "input_track_detections_topic", rclpy.Parameter.Type.STRING
             )
             .get_parameter_value()
             .string_value
@@ -50,11 +58,19 @@ class TrashPoseEstimatorDepthFromOdom(TrashPoseEstimator):
             input_detections_topic,
             qos_profile=qos_profile_sensor_data,
         )
+        track_detections_subscription = message_filters.Subscriber(
+            self,
+            DetectionArray,
+            input_track_detections_topic,
+            qos_profile=qos_profile_sensor_data,
+        )
         odom_subscription = message_filters.Subscriber(
             self, Odometry, self.input_odom_topic, qos_profile=qos_profile_sensor_data
         )
         self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
-            [detections_subscription, odom_subscription], 20, slop=0.1
+            [detections_subscription, track_detections_subscription, odom_subscription],
+            20,
+            slop=0.1,
         )
         self.time_synchronizer.registerCallback(self.detections_callback)
 
@@ -130,7 +146,10 @@ class TrashPoseEstimatorDepthFromOdom(TrashPoseEstimator):
         return True
 
     def detections_callback(
-        self, detection_array_msg: DetectionArray, odom_msg: Odometry
+        self,
+        detection_array_msg: DetectionArray,
+        track_detection_array_msg: DetectionArray,
+        odom_msg: Odometry,
     ):
         if not self.is_enabled:
             return
@@ -142,21 +161,24 @@ class TrashPoseEstimatorDepthFromOdom(TrashPoseEstimator):
         object_to_camera_depth = object_to_robot_depth - self.camera_to_robot_depth
         self.get_logger().info(f"Object to camera depth: {object_to_camera_depth} m")
 
-        best_detections = get_top_k_detections_per_class(
+        best_table_detections = get_top_k_detections_per_class(
             detection_array_msg,
-            {"bottle": 2, "ladle": 2, "pink_bucket": 1, "yellow_bucket": 1},
+            {"pink_bucket": 1, "yellow_bucket": 1},
         )
+        best_track_detections = get_top_k_detections_per_class(
+            track_detection_array_msg,
+            {"bottle": 1, "ladle": 1},
+        )
+        best_detections = best_table_detections | best_track_detections
         header = detection_array_msg.header
-
-        track_detections = self.get_track_detections(
-            best_detections, object_to_camera_depth
-        )
 
         # We are unable to estimate orientation, so we set it to identity
         rvec = np.zeros((3, 1), dtype=np.float32)
 
-        for class_name, detection in track_detections.items():
-            translation = self.get_detection_position(detection, object_to_camera_depth)
+        for class_name, detection in best_detections.items():
+            translation = get_detection_centroid_position(
+                detection, object_to_camera_depth
+            )
             tvec = translation.reshape((3, 1))
 
             if class_name in ["bottle", "ladle"]:
