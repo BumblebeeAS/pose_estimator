@@ -39,6 +39,16 @@ class SlalomPoseEstimator(PoseEstimatorNode):
             .get_parameter_value()
             .string_value
         )
+        self.object_frame = (
+            self.declare_parameter("object_frame", "slalom_layer")
+            .get_parameter_value()
+            .string_value
+        )
+        self.max_reprojection_error = (
+            self.declare_parameter("max_reprojection_error", 10.0)
+            .get_parameter_value()
+            .double_value
+        )
 
         self.cv_bridge = CvBridge()
         detections_subscription = message_filters.Subscriber(
@@ -213,7 +223,10 @@ class SlalomPoseEstimator(PoseEstimatorNode):
                 # counted as one cluster
 
                 rvec, tvec, inliers = get_object_pose(
-                    self.camera, object_points, image_points, max_reprojection_error=10
+                    self.camera,
+                    object_points,
+                    image_points,
+                    max_reprojection_error=self.max_reprojection_error,
                 )
 
                 if inliers is None:
@@ -226,7 +239,7 @@ class SlalomPoseEstimator(PoseEstimatorNode):
                 continue
 
             self.publish_transform(
-                tvec, rvec, detections_msg.header, f"slalom_layer_{layer}"
+                tvec, rvec, detections_msg.header, f"{self.object_frame}_{layer}"
             )
 
         end_time = self.get_clock().now()
