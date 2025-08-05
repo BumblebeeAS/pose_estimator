@@ -11,6 +11,7 @@ from sensor_msgs.msg import Image
 from supervision.detection.utils.converters import polygon_to_mask
 from yolo_msgs.msg import Detection, DetectionArray
 
+from image_processing.utils.image_annotations import get_image_annotations
 from pose_estimator.config.object_points import SLALOM_GATE_OBJECT_POINTS_DICT
 from pose_estimator.utils.detections import (
     assign_to_centroids,
@@ -20,7 +21,6 @@ from pose_estimator.utils.detections import (
     get_top_k_detections_per_class,
     match_polygon_points_sequence,
 )
-from pose_estimator.utils.image_annotations import get_image_annotations
 from pose_estimator.utils.pose_estimator import get_object_pose
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 
