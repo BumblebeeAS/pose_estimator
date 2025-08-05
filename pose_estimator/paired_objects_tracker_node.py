@@ -24,8 +24,8 @@ class TrackObject:
 
 
 class PairedObjectsTrackerNode(Node):
-    def __init__(self, name):
-        super().__init__(name)
+    def __init__(self):
+        super().__init__("paired_objects_tracker_node")
 
         # Parameters
         track_object_names = (
@@ -197,3 +197,19 @@ class PairedObjectsTrackerNode(Node):
         track_detections_array_msg.header = detection_array_msg.header
         track_detections_array_msg.detections = list(track_detections.values())
         self.output_detections_publisher.publish(track_detections_array_msg)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = PairedObjectsTrackerNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()

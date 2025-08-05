@@ -41,6 +41,7 @@ setup(
             "trash_table_pose_estimator_node = pose_estimator.trash_table_pose_estimator_node:main",
             "torpedo_pose_estimator_node = pose_estimator.torpedo_pose_estimator_node:main",
             "slalom_yaw_score_node = pose_estimator.slalom_yaw_score:main",
+            "paired_objects_tracker_node = pose_estimator.paired_objects_tracker_node:main",
         ],
     },
 )

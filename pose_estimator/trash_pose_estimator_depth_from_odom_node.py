@@ -170,6 +170,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
             {"bottle": 1, "ladle": 1},
         )
         best_detections = best_table_detections | best_track_detections
+        best_detections = {k: v[0] for k, v in best_detections.items() if len(v) > 0}
         header = detection_array_msg.header
 
         # We are unable to estimate orientation, so we set it to identity
@@ -177,7 +178,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
 
         for class_name, detection in best_detections.items():
             translation = get_detection_centroid_position(
-                detection, object_to_camera_depth
+                detection, self.camera, object_to_camera_depth
             )
             tvec = translation.reshape((3, 1))
 

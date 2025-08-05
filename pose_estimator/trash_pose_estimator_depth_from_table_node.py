@@ -89,10 +89,13 @@ class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
             {"bottle": 1, "ladle": 1},
         )
         best_detections = best_table_detections | best_track_detections
+        best_detections = {k: v[0] for k, v in best_detections.items() if len(v) > 0}
         header = detection_array_msg.header
 
         for class_name, detection in best_detections.items():
-            translation = get_detection_centroid_position(detection, object_depth)
+            translation = get_detection_centroid_position(
+                detection, self.camera, object_depth
+            )
 
             if class_name in ["bottle", "ladle"]:
                 # For trash objects, we want the robot to align with the long edge of the object

@@ -46,7 +46,10 @@ def get_detection_centroid_position(
     by backprojecting the pixel with known object depth."""
     detection_centroid = get_detection_centroid(detection)
     X, Y = backproject_pixel(
-        detection_centroid[0], detection_centroid[1], object_depth, camera
+        detection_centroid[0],
+        detection_centroid[1],
+        object_depth,
+        camera.camera_matrix(),
     )
     return np.array([X, Y, object_depth])
 
