@@ -73,7 +73,7 @@ class PairedObjectsTrackerNode(Node):
         # Using an initial centroid allows us to prioritize tracking objects
         # at a particular location in the image when there are no detections yet.
         self.track_dict: dict[str, TrackObject] = {
-            track_object_name: TrackObject(np.array([init_centroid]))
+            track_object_name: TrackObject(past_centroids=np.array([init_centroid]))
             for track_object_name in track_object_names
         }
 
