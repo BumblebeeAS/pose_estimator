@@ -36,6 +36,7 @@ setup(
             "shark_fish_pose_estimator_node = pose_estimator.shark_fish_pose_estimator_node:main",
             "bin_pose_estimator_node = pose_estimator.bin_pose_estimator_node:main",
             "slalom_pose_estimator_node = pose_estimator.slalom_pose_estimator_node:main",
+            "trash_detections_processor_node = pose_estimator.trash_detections_processor_node:main",
             "trash_pose_estimator_depth_from_odom_node = pose_estimator.trash_pose_estimator_depth_from_odom_node:main",
             "trash_pose_estimator_depth_from_table_node = pose_estimator.trash_pose_estimator_depth_from_table_node:main",
             "trash_table_pose_estimator_node = pose_estimator.trash_table_pose_estimator_node:main",

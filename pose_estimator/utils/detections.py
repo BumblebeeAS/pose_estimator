@@ -426,3 +426,23 @@ def get_object_depth(depth_image: MatLike, object_mask: MatLike) -> float:
         return float("nan")
 
     return np.median(masked_depth)
+
+
+def get_IoA(contained_polygon: np.ndarray, containing_polygon: np.ndarray) -> float:
+    """Calculate the Intersection over Area (IoA) of two polygons.
+
+    Args:
+        contained_polygon (np.ndarray): Exterior points of the contained polygon.
+        containing_polygon (np.ndarray): Exterior points of the containing polygon.
+
+    Returns:
+        float: IoA value.
+    """
+    containing_poly = shapely.Polygon(containing_polygon)
+    contained_poly = shapely.Polygon(contained_polygon)
+
+    if not containing_poly.is_valid or not contained_poly.is_valid:
+        return 0.0
+
+    intersection_area = containing_poly.intersection(contained_poly).area
+    return intersection_area / contained_poly.area if contained_poly.area > 0 else 0.0
