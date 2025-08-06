@@ -178,7 +178,7 @@ class PairedObjectsTrackerNode(Node):
             past_centroids = np.vstack((past_centroids, detection_centroid))
             past_centroids = past_centroids[-self.num_last_centroids :]
             self.track_dict[class_name] = TrackObject(
-                selected_detection.id, other_id, past_centroids
+                selected_detection.id, other_id, past_centroids, life
             )
 
             track_detections[class_name] = selected_detection
