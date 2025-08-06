@@ -20,7 +20,7 @@ class TrackObject:
     track_id: int = -1
     other_id: int = -1
     past_centroids: np.ndarray = np.zeros((1, 2))
-    life: int = -1
+    last_seen_time: float = -float("inf")
 
 
 class PairedObjectsTrackerNode(Node):
@@ -59,14 +59,22 @@ class PairedObjectsTrackerNode(Node):
             .get_parameter_value()
             .integer_value
         )
-        self.keep_track_alive_counter = (
-            self.declare_parameter("keep_track_alive_counter", 12)
+        init_centroid = (
+            self.declare_parameter("init_centroid", [0.0, 0.0])
             .get_parameter_value()
-            .integer_value
+            .double_array_value
+        )
+        self.keep_track_alive_time = (
+            self.declare_parameter("keep_track_alive_time", 5.0)
+            .get_parameter_value()
+            .double_value
         )
 
+        # Using an initial centroid allows us to prioritize tracking objects
+        # at a particular location in the image when there are no detections yet.
         self.track_dict: dict[str, TrackObject] = {
-            track_object_name: TrackObject() for track_object_name in track_object_names
+            track_object_name: TrackObject(np.array([init_centroid]))
+            for track_object_name in track_object_names
         }
 
         # Get camera info
@@ -100,9 +108,10 @@ class PairedObjectsTrackerNode(Node):
         detections to track the primary target. In the current frame, if there is a detection
         with the primary track id from the previous frame, select that detection. Otherwise, if
         one of the detections has the "other" track id from the previous frame, skip the target
-        for that frame and decrement a counter. Finally, if both track ids are not present in the
-        current frame, select the detection with the closest centroid to the target in the
-        previous frame. Note that pixel distances are used.
+        for that frame if the last seen time is recent or select the other detection if the last
+        seen time is too old. Finally, if both track ids are not present in the current frame,
+        select the detection with the closest centroid to the target in the previous frame. Note
+        that pixel distances are used.
 
         The idea of the "other" track id is that even if we lose track of the primary target, we
         are able to know that it is not the other object if the "other" track id is still valid.
@@ -115,6 +124,7 @@ class PairedObjectsTrackerNode(Node):
             dict[str, Detection]: Dictionary of tracked detections.
         """
         track_detections = {}
+        curr_time = self.get_clock().now().nanoseconds * 1e-9
 
         for class_name, detections in best_detections.items():
             if len(detections) == 0:
@@ -127,12 +137,16 @@ class PairedObjectsTrackerNode(Node):
             curr_id = self.track_dict[class_name].track_id
             other_id = self.track_dict[class_name].other_id
             past_centroids = self.track_dict[class_name].past_centroids
-            life = self.track_dict[class_name].life
+            last_seen_time = self.track_dict[class_name].last_seen_time
+
+            self.get_logger().info("Processing class: " + class_name)
+            self.get_logger().info(f"Current track id: {curr_id}, Other id: {other_id}")
+            self.get_logger().info(f"Last seen time: {last_seen_time}")
 
             if curr_id in detections_by_id:
                 # Either select the detection with the previous frame's track_id
                 selected_detection = detections_by_id[curr_id]
-                life = self.keep_track_alive_counter
+                last_seen_time = curr_time
 
             elif len(detections) == 2 and other_id in detections_by_id:
                 # Or if there are two detections, and one has the previous frame's
@@ -141,18 +155,17 @@ class PairedObjectsTrackerNode(Node):
                     selected_detection = detections[0]
                 else:
                     selected_detection = detections[1]
-                life = self.keep_track_alive_counter
+                last_seen_time = curr_time
 
             elif len(detections) == 1 and other_id in detections_by_id:
                 # Or if there is only one detection, and it has the previous frame's
-                # other_id, don't update anything and decrement the life counter
-                if life > 0:
-                    self.track_dict[class_name].life = life - 1
+                # other_id, don't update anything
+                if curr_time - last_seen_time < self.keep_track_alive_time:
                     continue
                 else:
-                    # If the life counter is zero, select the only available detection
+                    # If the last seen time is too old, select the only available detection
                     selected_detection = detections[0]
-                    life = self.keep_track_alive_counter
+                    last_seen_time = curr_time
 
             else:
                 # Or the detection with the closest centroid to the tracked object
@@ -165,7 +178,7 @@ class PairedObjectsTrackerNode(Node):
                     if dist < selected_dist:
                         selected_dist = dist
                         selected_detection = detection
-                life = self.keep_track_alive_counter
+                last_seen_time = curr_time
 
             # Update the track object properties
             other_detection = list(
@@ -178,7 +191,7 @@ class PairedObjectsTrackerNode(Node):
             past_centroids = np.vstack((past_centroids, detection_centroid))
             past_centroids = past_centroids[-self.num_last_centroids :]
             self.track_dict[class_name] = TrackObject(
-                selected_detection.id, other_id, past_centroids, life
+                selected_detection.id, other_id, past_centroids, last_seen_time
             )
 
             track_detections[class_name] = selected_detection
