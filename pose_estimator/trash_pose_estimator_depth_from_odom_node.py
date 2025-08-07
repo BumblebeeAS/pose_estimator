@@ -51,6 +51,11 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
             .get_parameter_value()
             .string_value
         )
+        time_sync_slop = (
+            self.declare_parameter("time_sync_slop", 0.2)
+            .get_parameter_value()
+            .double_value
+        )
 
         detections_subscription = message_filters.Subscriber(
             self,
@@ -70,7 +75,7 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
         self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
             [detections_subscription, track_detections_subscription, odom_subscription],
             20,
-            slop=0.1,
+            slop=time_sync_slop,
         )
         self.time_synchronizer.registerCallback(self.detections_callback)
 
