@@ -446,3 +446,22 @@ def get_IoA(contained_polygon: np.ndarray, containing_polygon: np.ndarray) -> fl
 
     intersection_area = containing_poly.intersection(contained_poly).area
     return intersection_area / contained_poly.area if contained_poly.area > 0 else 0.0
+
+
+def get_detection_perimeter(detection: Detection) -> float:
+    """Calculate the perimeter covered by the polygon of a Detection
+
+    Args:
+        detection (Detection): Incoming detection to get perimeter of
+
+    Returns:
+        float: Perimeter of the polygon of detection
+    """
+    detection_points = get_detection_polygon(detection)
+    return shapely.length(shapely.Polygon(detection_points))
+
+def is_in_polygon(detection: Detection, polygon: np.ndarray):
+    detection_polygon = shapely.Polygon(get_detection_polygon(detection))
+    containing_polygon = shapely.Polygon(polygon)
+
+    return shapely.contains(containing_polygon, detection_polygon)
