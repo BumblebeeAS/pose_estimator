@@ -1,8 +1,10 @@
 import numpy as np
 import rclpy
-from foxglove_msgs.msgs import ImageAnnotations
+from foxglove_msgs.msg import ImageAnnotations
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.wait_for_message import wait_for_message
+from sensor_msgs.msg import CameraInfo
 from yolo_msgs.msg import DetectionArray
 
 from image_processing.utils.image_annotations import get_image_annotations
@@ -17,6 +19,11 @@ class TrashObjectInGrabberNode(Node):
     def __init__(self):
         super().__init__("trash_object_in_grabber_node")
 
+        camera_info_topic = (
+            self.declare_parameter("camera_info_topic", rclpy.Parameter.Type.STRING)
+            .get_parameter_value()
+            .string_value
+        )
         input_detections_topic = (
             self.declare_parameter(
                 "input_detections_topic", rclpy.Parameter.Type.STRING
@@ -24,16 +31,16 @@ class TrashObjectInGrabberNode(Node):
             .get_parameter_value()
             .string_value
         )
-        output_annotations_topic = (
+        output_detections_in_grabber_topic = (
             self.declare_parameter(
-                "output_annotations_topic", rclpy.Parameter.Type.STRING
+                "output_detections_in_grabber_topic", rclpy.Parameter.Type.STRING
             )
             .get_parameter_value()
             .string_value
         )
-        output_objects_in_grabber_topic = (
+        output_annotations_topic = (
             self.declare_parameter(
-                "output_objects_in_grabber_topic", rclpy.Parameter.Type.STRING
+                "output_annotations_topic", rclpy.Parameter.Type.STRING
             )
             .get_parameter_value()
             .string_value
@@ -75,7 +82,7 @@ class TrashObjectInGrabberNode(Node):
         )
         self.objects_in_grabber_pub = self.create_publisher(
             DetectionArray,
-            output_objects_in_grabber_topic,
+            output_detections_in_grabber_topic,
             qos_profile=qos_profile_sensor_data,
         )
         self.annotations_pub = self.create_publisher(
@@ -84,8 +91,30 @@ class TrashObjectInGrabberNode(Node):
             qos_profile=qos_profile_sensor_data,
         )
 
-        self.bottle_grab_roi_polygon = np.array(bottle_roi_polygon).reshape(-1, 2)
-        self.ladle_grab_roi_polygon = np.array(ladle_roi_polygon).reshape(-1, 2)
+        # Get image dimensions from camera info
+        valid, camera_info = wait_for_message(CameraInfo, self, camera_info_topic)
+        if not valid:
+            raise ValueError("Failed to get camera info")
+        else:
+            camera_info: CameraInfo
+
+        img_shape = np.array([camera_info.width, camera_info.height])
+        if len(bottle_roi_polygon) % 2 != 0 or len(ladle_roi_polygon) % 2 != 0:
+            raise ValueError(
+                "The provided ROI polygons must have an even number of elements."
+            )
+        self.bottle_grab_roi_polygon = (
+            np.array(bottle_roi_polygon).reshape(-1, 2) * img_shape
+        )
+        self.ladle_grab_roi_polygon = (
+            np.array(ladle_roi_polygon).reshape(-1, 2) * img_shape
+        )
+        self.get_logger().info(
+            f"Initialized with bottle grab ROI polygon: {self.bottle_grab_roi_polygon.tolist()}"
+        )
+        self.get_logger().info(
+            f"Initialized with ladle grab ROI polygon: {self.ladle_grab_roi_polygon.tolist()}"
+        )
 
     def detections_callback(self, detection_array_msg: DetectionArray):
         best_detections = get_top_k_detections_per_class(
