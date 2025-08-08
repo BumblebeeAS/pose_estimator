@@ -69,9 +69,9 @@ class TrashObjectInGrabberNode(Node):
             .get_parameter_value()
             .double_value
         )
-        self.ladle_grab_perimeter_threshold = (
+        self.ladle_grab_area_threshold = (
             self.declare_parameter(
-                "ladle_grab_perimeter_threshold", rclpy.Parameter.Type.DOUBLE
+                "ladle_grab_area_threshold", rclpy.Parameter.Type.DOUBLE
             )
             .get_parameter_value()
             .double_value
@@ -115,8 +115,8 @@ class TrashObjectInGrabberNode(Node):
                     bottle_detection_array.detections.append(detection)
             elif class_name == "ladle":
                 if (
-                    get_detection_perimeter(detection)
-                    >= self.ladle_grab_perimeter_threshold
+                    get_IoA(get_detection_polygon(detection), self.ladle_grab_region_polygon)
+                    >= self.ladle_grab_area_threshold
                 ):
                     ladle_detection_array.detections.append(detection)
 
