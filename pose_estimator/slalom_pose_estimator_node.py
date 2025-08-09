@@ -16,10 +16,11 @@ from pose_estimator.config.object_points import SLALOM_GATE_OBJECT_POINTS_DICT
 from pose_estimator.utils.detections import (
     assign_to_centroids,
     filter_detections_by_num_points,
-    get_detection_obb,
+    get_detection_polygon,
     get_object_depth,
     get_top_k_detections_per_class,
     match_polygon_points_sequence,
+    polygon_to_obb,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
@@ -83,13 +84,15 @@ class SlalomPoseEstimator(PoseEstimatorNode):
 
         def process_pole_detections(detections: List[Detection]):
             """Get pole OBBs and pole depths."""
-            pole_obbs = [get_detection_obb(det)[1] for det in detections]
+            pole_polygons = [get_detection_polygon(det) for det in detections]
+            pole_obbs = [polygon_to_obb(poly)[1] for poly in pole_polygons]
             resolution_wh_list = [
                 (det.mask.width, det.mask.height) for det in detections
             ]
+            # Use polygon instead of OBB for a tighter depth estimate
             pole_depths = [
-                get_object_depth(depth_img, polygon_to_mask(obb, resolution_wh))
-                for obb, resolution_wh in zip(pole_obbs, resolution_wh_list)
+                get_object_depth(depth_img, polygon_to_mask(poly, resolution_wh))
+                for poly, resolution_wh in zip(pole_polygons, resolution_wh_list)
             ]
             return pole_obbs, pole_depths
 
