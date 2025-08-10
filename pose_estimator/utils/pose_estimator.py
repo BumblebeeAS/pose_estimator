@@ -45,6 +45,12 @@ def get_detection_centroid_position(
     """Get the position of the detection centroid in the camera frame
     by backprojecting the pixel with known object depth."""
     detection_centroid = get_detection_centroid(detection)
+
+    # Un-distort the pixel coordinates
+    detection_centroid = cv2.undistortPoints(
+        np.array([[detection_centroid]]), camera.camera_matrix(), camera.dist_coeffs()
+    )[0][0]
+
     X, Y = backproject_pixel(
         detection_centroid[0],
         detection_centroid[1],
