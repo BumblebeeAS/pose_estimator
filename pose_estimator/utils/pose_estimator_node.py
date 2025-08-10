@@ -24,6 +24,11 @@ class PoseEstimatorNode(Node):
             .get_parameter_value()
             .string_value
         )
+        is_image_rectified = (
+            self.declare_parameter("is_image_rectified", False)
+            .get_parameter_value()
+            .bool_value
+        )
 
         # Get camera info
         valid, camera_info = wait_for_message(CameraInfo, self, camera_info_topic)
@@ -31,7 +36,9 @@ class PoseEstimatorNode(Node):
             raise ValueError("Failed to get camera info")
         else:
             camera_info: CameraInfo
-            self.camera = PinholeCamera.from_camera_info(camera_info, rectified=False)
+            self.camera = PinholeCamera.from_camera_info(
+                camera_info, rectified=is_image_rectified
+            )
         self.camera: PinholeCamera
 
         # Transforms broadcaster
