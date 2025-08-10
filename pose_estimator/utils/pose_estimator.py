@@ -14,7 +14,7 @@ from pose_estimator.utils.PinholeCamera import PinholeCamera
 
 
 def backproject_pixel(
-    x: float, y: float, Z: float, K: np.ndarray
+    x: float, y: float, Z: float, camera: PinholeCamera
 ) -> tuple[float, float]:
     """
     Solve w * [x, y, 1]^T = K * [X, Y, Z]^T for X, Y, given Z, where
@@ -23,7 +23,7 @@ def backproject_pixel(
     Args:
         x, y: Image coordinates
         Z: Known depth
-        K: 3x3 camera intrinsic matrix
+        camera: PinholeCamera object
 
     Raises:
         np.linalg.LinAlgError: If inverse of K cannot be computed.
@@ -31,11 +31,12 @@ def backproject_pixel(
     Returns:
         X, Y: 3D coordinates in the camera frame
     """
-    pixel = np.array([x, y, 1.0])
-    K_inv = np.linalg.inv(K)
-    direction = K_inv @ pixel
-    direction *= Z / direction[2]
-    X, Y = direction[0], direction[1]
+    xn, yn = cv2.undistortPoints(
+        np.array([[[x, y]]], dtype=np.float32),
+        camera.camera_matrix(),
+        camera.dist_coeffs(),
+    )[0][0]
+    X, Y = xn * Z, yn * Z
     return X, Y
 
 
@@ -46,16 +47,8 @@ def get_detection_centroid_position(
     by backprojecting the pixel with known object depth."""
     detection_centroid = get_detection_centroid(detection)
 
-    # Un-distort the pixel coordinates
-    detection_centroid = cv2.undistortPoints(
-        np.array([[detection_centroid]]), camera.camera_matrix(), camera.dist_coeffs()
-    )[0][0]
-
     X, Y = backproject_pixel(
-        detection_centroid[0],
-        detection_centroid[1],
-        object_depth,
-        camera.camera_matrix(),
+        detection_centroid[0], detection_centroid[1], object_depth, camera
     )
     return np.array([X, Y, object_depth])
 
