@@ -4,12 +4,12 @@ import rclpy
 from foxglove_msgs.msg import ImageAnnotations
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from scipy.spatial import ConvexHull
 from std_msgs.msg import Header
 from yolo_msgs.msg import Detection, DetectionArray
 
 from image_processing.utils.image_annotations import get_image_annotations
 from pose_estimator.utils.detections import (
+    get_detection_convex_hull,
     get_detection_polygon,
     get_IoA,
     get_top_k_detections_per_class,
@@ -34,12 +34,10 @@ def is_detection_inside(
 ):
     """Checks if the contained detection intersects with the convex hull of the
     containing detection."""
-    containing_polygon = get_detection_polygon(containing_detection)
-    contained_polygon = get_detection_polygon(contained_detection)
     # Use a convex hull since the trash may obscure corners of the containing polygon.
-    convex_hull_idxs = ConvexHull(containing_polygon).vertices
-    convex_hull = containing_polygon[convex_hull_idxs]
-    return get_IoA(contained_polygon, convex_hull) > IoA_threshold
+    convex_hull_containing_polygon = get_detection_convex_hull(containing_detection)
+    contained_polygon = get_detection_polygon(contained_detection)
+    return get_IoA(contained_polygon, convex_hull_containing_polygon) > IoA_threshold
 
 
 def get_detection_array(

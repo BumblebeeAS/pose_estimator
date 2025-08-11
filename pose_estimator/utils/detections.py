@@ -1,14 +1,15 @@
+import copy
 from operator import attrgetter
 from typing import Dict, List, Sequence, Tuple
 
 import cv2
 import numpy as np
-import rclpy
 import shapely
 from cv2.typing import MatLike
 from numpy.typing import ArrayLike
 from rclpy.impl.rcutils_logger import RcutilsLogger
-from yolo_msgs.msg import Detection, DetectionArray
+from scipy.spatial import ConvexHull
+from yolo_msgs.msg import Detection, DetectionArray, Point2D
 
 
 def order_points_clockwise(pts: ArrayLike) -> np.ndarray:
@@ -438,6 +439,10 @@ def get_IoA(contained_polygon: np.ndarray, containing_polygon: np.ndarray) -> fl
     Returns:
         float: IoA value.
     """
+    # If there are fewer than 3 points, shapely.Polygon cannot be created.
+    if len(contained_polygon) < 3 or len(containing_polygon) < 3:
+        return 0.0
+
     containing_poly = shapely.Polygon(containing_polygon)
     contained_poly = shapely.Polygon(contained_polygon)
 
@@ -448,20 +453,21 @@ def get_IoA(contained_polygon: np.ndarray, containing_polygon: np.ndarray) -> fl
     return intersection_area / contained_poly.area if contained_poly.area > 0 else 0.0
 
 
-def get_detection_perimeter(detection: Detection) -> float:
-    """Calculate the perimeter covered by the polygon of a Detection
+def get_detection_convex_hull(detection: Detection) -> np.ndarray:
+    """Get the convex hull of a detection's mask.
 
     Args:
-        detection (Detection): Incoming detection to get perimeter of
+        detection (Detection): Incoming detection to get convex hull of.
 
     Returns:
-        float: Perimeter of the polygon of detection
+        np.ndarray: Convex hull points of the detection's mask.
     """
-    detection_points = get_detection_polygon(detection)
-    return shapely.length(shapely.Polygon(detection_points))
+    detection_polygon = get_detection_polygon(detection)
 
-def is_in_polygon(detection: Detection, polygon: np.ndarray):
-    detection_polygon = shapely.Polygon(get_detection_polygon(detection))
-    containing_polygon = shapely.Polygon(polygon)
+    # A simplex cannot be constructed from fewer than 3 points.
+    if len(detection_polygon) < 3:
+        return detection_polygon
 
-    return shapely.contains(containing_polygon, detection_polygon)
+    convex_hull_idxs = ConvexHull(detection_polygon).vertices
+    convex_hull = detection_polygon[convex_hull_idxs]
+    return convex_hull
