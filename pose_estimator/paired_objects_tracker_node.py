@@ -157,15 +157,9 @@ class PairedObjectsTrackerNode(Node):
                     selected_detection = detections[1]
                 last_seen_time = curr_time
 
-            elif len(detections) == 1 and other_id in detections_by_id:
-                # Or if there is only one detection, and it has the previous frame's
-                # other_id, don't update anything
-                if curr_time - last_seen_time < self.keep_track_alive_time:
-                    continue
-                else:
-                    # If the last seen time is too old, select the only available detection
-                    selected_detection = detections[0]
-                    last_seen_time = curr_time
+            elif curr_time - last_seen_time < self.keep_track_alive_time:
+                # Or if the last seen time is recent, don't update the track
+                continue
 
             else:
                 # Or the detection with the closest centroid to the tracked object
