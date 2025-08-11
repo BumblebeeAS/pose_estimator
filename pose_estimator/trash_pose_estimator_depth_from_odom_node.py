@@ -10,8 +10,11 @@ from rclpy.time import Time
 from rclpy.wait_for_message import wait_for_message
 from yolo_msgs.msg import DetectionArray
 
-from pose_estimator.utils.detections import get_top_k_detections_per_class
-from pose_estimator.utils.pose_estimator import get_detection_centroid_position
+from pose_estimator.utils.detections import (
+    get_detection_obb,
+    get_top_k_detections_per_class,
+)
+from pose_estimator.utils.pose_estimator import backproject_pixel
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 
 NUM_LAST_POSITIONS = 100
@@ -182,9 +185,12 @@ class TrashPoseEstimatorDepthFromOdom(PoseEstimatorNode):
         rvec = np.zeros((3, 1), dtype=np.float32)
 
         for class_name, detection in best_detections.items():
-            translation = get_detection_centroid_position(
-                detection, self.camera, object_to_camera_depth
+            _, obb = get_detection_obb(detection)
+            centroid = np.mean(obb, axis=0)
+            X, Y = backproject_pixel(
+                centroid[0], centroid[1], object_to_camera_depth, self.camera
             )
+            translation = np.array([X, Y, object_to_camera_depth])
             tvec = translation.reshape((3, 1))
 
             if class_name in ["bottle", "ladle"]:
