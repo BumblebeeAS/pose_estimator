@@ -147,6 +147,9 @@ def filter_by_homography(
     The object points should first be transformed so that the last
     coordinates are zero.
 
+    Note: If y increases downwards in the image frame, the object points'
+    y coordinates should increase downwards as well for best results.
+
     Args:
         object_points (np.ndarray): N x 3
         image_points (np.ndarray): N x 2
