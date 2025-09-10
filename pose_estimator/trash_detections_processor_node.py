@@ -4,7 +4,7 @@ import rclpy
 from foxglove_msgs.msg import ImageAnnotations
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import Header
+from std_msgs.msg import Bool, Header
 from yolo_msgs.msg import Detection, DetectionArray
 
 from image_processing.utils.image_annotations import get_image_annotations
@@ -101,6 +101,13 @@ class TrashDetectionsProcessorNode(Node):
             qos_profile=qos_profile_sensor_data,
         )
 
+        # For table search
+        self.is_table_in_view_publisher = self.create_publisher(
+            Bool,
+            f"{input_detections_topic}/is_table_in_view",
+            qos_profile=qos_profile_sensor_data,
+        )
+
         self.image_annotations_publisher = self.create_publisher(
             ImageAnnotations,
             f"{input_detections_topic}/annotations",
@@ -148,6 +155,20 @@ class TrashDetectionsProcessorNode(Node):
 
             if not is_trash_in_bucket:
                 uncollected_detections.append(det)
+
+        # For table search
+        is_bucket_in_view = (
+            pink_bucket_detection is not None or yellow_bucket_detection is not None
+        )
+        if (
+            table_detection is not None
+            and len(in_table_detections) > 0
+            and is_bucket_in_view
+        ):
+            is_table_in_view_msg = Bool(data=True)
+        else:
+            is_table_in_view_msg = Bool(data=False)
+        self.is_table_in_view_publisher.publish(is_table_in_view_msg)
 
         header = detection_array_msg.header
         in_bucket_detections_array = get_detection_array(header, in_bucket_detections)
