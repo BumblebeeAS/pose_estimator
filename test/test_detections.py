@@ -98,6 +98,9 @@ def test_match_bin(image_points: ArrayLike) -> None:
     # Match image points and object points
     angle, detected_points = polygon_to_obb(image_points)
 
+    # Normalize angle to be in the range [-90, 90)
+    angle = (angle + 90) % 180 - 90
+
     # Rotate object points before matching by point distances because bin yaw can
     # be large and we assume perspective does not change imaged aspect ratio by much.
     matched_object_points, matched_image_points = match_polygon_points(

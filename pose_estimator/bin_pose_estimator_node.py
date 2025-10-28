@@ -63,6 +63,9 @@ class BinPoseEstimator(PoseEstimatorNode):
         #     best_detections["bin"], self.get_logger()
         # )
 
+        # Normalize angle to be in the range [-90, 90)
+        angle = (angle + 90) % 180 - 90
+
         # Rotate object points before matching by point distances because bin yaw can
         # be large and we assume perspective does not change imaged aspect ratio by much.
         object_points, image_points = match_polygon_points(
