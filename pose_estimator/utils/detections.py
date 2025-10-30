@@ -1,4 +1,3 @@
-import copy
 from operator import attrgetter
 from typing import Dict, List, Sequence, Tuple
 
@@ -9,7 +8,7 @@ from cv2.typing import MatLike
 from numpy.typing import ArrayLike
 from rclpy.impl.rcutils_logger import RcutilsLogger
 from scipy.spatial import ConvexHull
-from yolo_msgs.msg import Detection, DetectionArray, Point2D
+from yolo_msgs.msg import Detection, DetectionArray
 
 
 def order_points_clockwise(pts: ArrayLike) -> np.ndarray:
@@ -471,3 +470,10 @@ def get_detection_convex_hull(detection: Detection) -> np.ndarray:
     convex_hull_idxs = ConvexHull(detection_polygon).vertices
     convex_hull = detection_polygon[convex_hull_idxs]
     return convex_hull
+
+
+def is_in_polygon(detection: Detection, polygon: np.ndarray):
+    detection_polygon = shapely.Polygon(get_detection_polygon(detection))
+    containing_polygon = shapely.Polygon(polygon)
+
+    return shapely.contains(containing_polygon, detection_polygon)
