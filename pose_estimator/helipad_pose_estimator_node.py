@@ -1,94 +1,24 @@
-import numpy as np
+import cv2
 import rclpy
+from foxglove_msgs.msg import ImageAnnotations
 from rclpy.qos import qos_profile_sensor_data
 from scipy.spatial import ConvexHull
-from shapely.geometry import LineString, Polygon
 from yolo_msgs.msg import DetectionArray
 
+from image_processing.utils.image_annotations import get_image_annotations
 from pose_estimator.config.robotx26_object_points import HELIPAD_RADIUS
+from pose_estimator.utils.circles import (
+    fit_circle_RANSAC,
+    get_circle_point_correspondences,
+    get_circle_points,
+)
 from pose_estimator.utils.detections import (
     filter_detections_by_num_points,
     get_best_detections_per_class,
     get_detection_polygon,
 )
-from pose_estimator.utils.pose_estimator import get_object_pose, refine_object_pose
+from pose_estimator.utils.pose_estimator import get_object_pose
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
-
-
-def sample_polygon_by_angle(coords: np.ndarray, N: int) -> np.ndarray:
-    """Sample N boundary points of a possibly concave polygon defined
-    by coords, equally spaced in angle.
-
-    Args:
-        coords (np.ndarray): Array of (x, y) vertices.
-        N (int): number of angular samples.
-
-    Returns:
-        np.ndarray: list of N boundary points (x, y), equally spaced in angle
-
-    Raises:
-        ValueError: If the polygon is not valid.
-        RuntimeError: If there is no intersection between ray and polygon.
-    """
-    poly = Polygon(coords)
-    if not poly.is_valid:
-        raise ValueError("Polygon is not valid (self-intersections, etc.)")
-
-    # Guaranteed interior point, even for concave polygons
-    center_geom = poly.representative_point()
-    cx, cy = center_geom.x, center_geom.y
-
-    # Big radius: bigger than polygon's bounding box diagonal
-    minx, miny, maxx, maxy = poly.bounds
-    R = 2.0 * np.hypot(maxx - minx, maxy - miny)
-
-    boundary = poly.boundary
-    points = []
-
-    for k in range(N):
-        theta = 2.0 * np.pi * k / N
-
-        # Ray: center -> far point in direction theta
-        far_x = cx + R * np.cos(theta)
-        far_y = cy + R * np.sin(theta)
-        ray = LineString([(cx, cy), (far_x, far_y)])
-
-        intersection = boundary.intersection(ray)
-        intersection_pts = np.array(intersection.coords)
-
-        if len(intersection_pts) == 0:
-            raise RuntimeError("Ray missed polygon; center may not be inside.")
-
-        dists = np.linalg.norm(intersection_pts - np.array([cx, cy]), axis=1)
-        nearest_pt = intersection_pts[np.argmin(dists)]
-        points.append(nearest_pt)
-
-    return np.array(points)
-
-
-def match_circle_points(
-    detection_polygon: np.ndarray, radius: float, num_points: int = 8
-) -> tuple[np.ndarray, np.ndarray]:
-    """Match points on a detected circular helipad to 3D object points.
-
-    Args:
-        detection_polygon (np.ndarray): _description_
-        radius (float): _description_
-        num_points (int, optional): _description_. Defaults to 8.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: _description_
-    """
-    # Sample points on the detected polygon boundary
-    image_points = sample_polygon_by_angle(detection_polygon, num_points)
-
-    # Define 3D object points on the helipad circle in its local frame
-    angles = np.linspace(0.0, 2 * np.pi, num_points, endpoint=False)
-    object_points = np.array(
-        [[radius * np.cos(angle), radius * np.sin(angle), 0.0] for angle in angles]
-    )
-
-    return image_points, object_points
 
 
 class HelipadPoseEstimator(PoseEstimatorNode):
@@ -113,9 +43,16 @@ class HelipadPoseEstimator(PoseEstimatorNode):
             qos_profile_sensor_data,
         )
 
-    def detections_callback(self, msg: DetectionArray):
+        # Debug annotations publisher
+        self.debug_annotations_publisher = self.create_publisher(
+            ImageAnnotations,
+            "debug_annotations",
+            qos_profile=qos_profile_sensor_data,
+        )
+
+    def detections_callback(self, detections_msg: DetectionArray):
         # We require at least 3 points for polygon creation
-        filtered_detections = filter_detections_by_num_points(msg, 3)
+        filtered_detections = filter_detections_by_num_points(detections_msg, 3)
 
         # Only include relevant classes
         relevant_classes = ["helipad"]
@@ -136,9 +73,19 @@ class HelipadPoseEstimator(PoseEstimatorNode):
         detection_polygon = get_detection_polygon(best_detections["helipad"])
         detection_convex_hull = ConvexHull(detection_polygon)
         detection_convex_hull_coords = detection_polygon[detection_convex_hull.vertices]
-        image_points, object_points = match_circle_points(
-            detection_convex_hull_coords, radius=HELIPAD_RADIUS, num_points=8
+        fit_cx, fit_cy, fit_r = fit_circle_RANSAC(
+            detection_convex_hull_coords, num_iter=500, thresh=5.0
         )
+        image_points, object_points = get_circle_point_correspondences(
+            fit_cx, fit_cy, fit_r, HELIPAD_RADIUS
+        )
+
+        # Publish debug annotations
+        circle_vis_points = get_circle_points(fit_cx, fit_cy, fit_r, 20)
+        image_annotations = get_image_annotations(
+            detections_msg.header, [[circle_vis_points]]
+        )
+        self.debug_annotations_publisher.publish(image_annotations)
 
         self.get_logger().info(
             f"Object points:\n{object_points}\nImage points:\n{image_points}"
@@ -149,25 +96,35 @@ class HelipadPoseEstimator(PoseEstimatorNode):
         ), "Number of object points and image points must match"
 
         try:
-            # We can set a low max re-projection error and refine pose even though
-            # the segmentation mask is noisy because we only have 4 points
+            # We set a large max re-projection error as the segmentation masks are noisy and
+            # the matched points for one detection may be at an offset from the matched points
+            # for another. Setting a lower max re-projection error may result in a more confident
+            # pose estimator, but it may also result in no inliers being found.
 
-            rvec, tvec, inliers = get_object_pose(
-                self.camera, object_points, image_points
+            retval, rvecs, tvecs = cv2.solveP3P(
+                object_points,
+                image_points,
+                self.camera.camera_matrix(),
+                self.camera.dist_coeffs(),
+                cv2.SOLVEPNP_P3P,
             )
 
-            if inliers is None:
-                raise ValueError("No inliers found during pose estimation.")
+            # rvec, tvec, inliers = get_object_pose(
+            #     self.camera, object_points, image_points, max_reprojection_error=100
+            # )
 
-            rvec, tvec = refine_object_pose(
-                self.camera, object_points, image_points, rvec, tvec
-            )
+            # if inliers is None:
+            #     raise ValueError("No inliers found during pose estimation.")
+
+            # We do not refine the pose as the points are likely to have large re-projection error.
 
         except Exception as e:
             self.get_logger().warn(f"Pose estimation failed: {e}")
             return
 
-        self.publish_transform(tvec, rvec, msg.header, self.object_frame_id)
+        tvec = tvecs[0]
+        rvec = rvecs[0]
+        self.publish_transform(tvec, rvec, detections_msg.header, self.object_frame_id)
 
 
 def main(args=None):

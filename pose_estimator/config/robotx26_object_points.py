@@ -5,4 +5,4 @@
 
 import numpy as np
 
-HELIPAD_RADIUS = 1.524
+HELIPAD_RADIUS = 0.762
