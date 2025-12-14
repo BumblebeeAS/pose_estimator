@@ -16,6 +16,17 @@ def plot_polygon(ax: Axes, points: ArrayLike) -> None:
     ax.plot(polygon[:, 0], polygon[:, 1], marker="o", ls="-")
 
 
+def plot_polygon_with_labels(ax: Axes, points: ArrayLike) -> None:
+    polygon = np.vstack([points, points[0]])  # Close the polygon
+    ax.plot(polygon[:, 0], polygon[:, 1], marker="o", ls="-")
+
+    points = np.array(points)
+    label_offset = (max(points[:, 0]) - min(points[:, 0])) * 0.02
+
+    for i, (x, y) in enumerate(points, start=1):
+        ax.text(x + label_offset, y, str(i), fontsize=12, color="black")
+
+
 def plot_quadrilaterals(ax: Axes, points: ArrayLike) -> None:
     for i in range(0, len(points), 4):
         quad = points[i : i + 4]
