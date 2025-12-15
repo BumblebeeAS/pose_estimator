@@ -1,6 +1,6 @@
 import cv2
 import rclpy
-from foxglove_msgs.msg import ImageAnnotations
+from foxglove_msgs.msg import ImageAnnotations, PointsAnnotation
 from rclpy.qos import qos_profile_sensor_data
 from scipy.spatial import ConvexHull
 from yolo_msgs.msg import DetectionArray
@@ -17,7 +17,6 @@ from pose_estimator.utils.detections import (
     get_best_detections_per_class,
     get_detection_polygon,
 )
-from pose_estimator.utils.pose_estimator import get_object_pose
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
 
 
@@ -44,9 +43,14 @@ class HelipadPoseEstimator(PoseEstimatorNode):
         )
 
         # Debug annotations publisher
-        self.debug_annotations_publisher = self.create_publisher(
+        self.circle_annotation_publisher = self.create_publisher(
             ImageAnnotations,
-            "debug_annotations",
+            "circle_annotation",
+            qos_profile=qos_profile_sensor_data,
+        )
+        self.inlier_points_publisher = self.create_publisher(
+            ImageAnnotations,
+            "inlier_points_annotation",
             qos_profile=qos_profile_sensor_data,
         )
 
@@ -73,19 +77,26 @@ class HelipadPoseEstimator(PoseEstimatorNode):
         detection_polygon = get_detection_polygon(best_detections["helipad"])
         detection_convex_hull = ConvexHull(detection_polygon)
         detection_convex_hull_coords = detection_polygon[detection_convex_hull.vertices]
-        fit_cx, fit_cy, fit_r = fit_circle_RANSAC(
+        circle, inlier_points = fit_circle_RANSAC(
             detection_convex_hull_coords, num_iter=500, thresh=5.0
         )
+        fit_cx, fit_cy, fit_r = circle
         image_points, object_points = get_circle_point_correspondences(
             fit_cx, fit_cy, fit_r, HELIPAD_RADIUS
         )
 
         # Publish debug annotations
         circle_vis_points = get_circle_points(fit_cx, fit_cy, fit_r, 20)
-        image_annotations = get_image_annotations(
+        circle_annotation = get_image_annotations(
             detections_msg.header, [[circle_vis_points]]
         )
-        self.debug_annotations_publisher.publish(image_annotations)
+        self.circle_annotation_publisher.publish(circle_annotation)
+        inlier_points_annotation = get_image_annotations(
+            detections_msg.header,
+            [[inlier_points]],
+            points_annotation_type=PointsAnnotation.POINTS,
+        )
+        self.inlier_points_publisher.publish(inlier_points_annotation)
 
         self.get_logger().info(
             f"Object points:\n{object_points}\nImage points:\n{image_points}"

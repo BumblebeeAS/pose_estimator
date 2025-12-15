@@ -96,7 +96,7 @@ def fit_circle_least_squares(points: np.ndarray):
 
 def fit_circle_RANSAC(
     points: np.ndarray, num_iter: int, thresh: float
-) -> tuple[float, float, float]:
+) -> tuple[tuple[float, float, float], np.ndarray]:
     """Fit a circle to a set of noisy points using RANSAC.
 
     Args:
@@ -137,9 +137,9 @@ def fit_circle_RANSAC(
 
     # Refinement
     inlier_points = points[best_inlier_mask]
-    cx, cy, r = fit_circle_least_squares(inlier_points)
+    circle = fit_circle_least_squares(inlier_points)
 
-    return cx, cy, r
+    return circle, inlier_points
 
 
 def get_circle_points(cx: float, cy: float, r: float, num_points: int) -> np.ndarray:
@@ -202,4 +202,193 @@ def get_circle_point_correspondences(
     image_points = get_circle_points(cx, cy, image_r, 3)
     object_points = get_circle_points(0.0, 0.0, object_r, 3)
     object_points = np.column_stack([object_points, np.zeros(3)])
+    return image_points, object_points
+
+
+def get_ellipse_points(
+    cx: float,
+    cy: float,
+    semi_major: float,
+    semi_minor: float,
+    angle_deg: float,
+    num_points: int,
+) -> np.ndarray:
+    """Get points on an ellipse.
+
+    Args:
+        cx (float): x-coordinate of ellipse center.
+        cy (float): y-coordinate of ellipse center.
+        semi_major (float): Semi-major axis length.
+        semi_minor (float): Semi-minor axis length.
+        angle_deg (float): Rotation of ellipse in degrees.
+        num_points (int): Number of points to generate.
+
+    Returns:
+        np.ndarray: num_points x 2 array of (x, y) points on the ellipse.
+    """
+    angles = np.linspace(0.0, 2 * np.pi, num_points, endpoint=False)
+    angle = np.radians(angle_deg)
+    cos_a = np.cos(angle)
+    sin_a = np.sin(angle)
+
+    x = semi_major * np.cos(angles)
+    y = semi_minor * np.sin(angles)
+    x_rot = x * cos_a - y * sin_a
+    y_rot = x * sin_a + y * cos_a
+    return np.column_stack([x_rot + cx, y_rot + cy])
+
+
+def fit_ellipse_cv2(points: np.ndarray) -> tuple:
+    """Fit an ellipse to a set of points using cv2.fitEllipse.
+
+    Args:
+        points (np.ndarray): N x 2 array of (x, y) points. Requires N >= 5.
+
+    Returns:
+        tuple: ((cx, cy), (major_axis, minor_axis), angle)
+
+    Raises:
+        ValueError: If < 5 points are supplied.
+    """
+    points = points.astype(np.float32)
+
+    if len(points) < 5:
+        raise ValueError("We need at least 5 points to fit an ellipse.")
+
+    ellipse = cv2.fitEllipse(points)
+
+    return ellipse
+
+
+def _get_ellipse_inliers(
+    points: np.ndarray, ellipse: tuple, thresh: float
+) -> np.ndarray:
+    """Determine which points are inliers to the given ellipse.
+
+    Calculates the pixel distance from each point to the closest edge of the ellipse.
+    A point is an inlier if its distance to the ellipse boundary is less than thresh.
+    """
+    (cx, cy), (major, minor), angle_deg = ellipse
+
+    # Convert angle to radians
+    angle = np.radians(angle_deg)
+    a = major / 2.0  # Semi-major axis
+    b = minor / 2.0  # Semi-minor axis
+
+    # Translate points to ellipse center
+    dx = points[:, 0] - cx
+    dy = points[:, 1] - cy
+
+    # Rotate to ellipse's principal axes
+    cos_a = np.cos(angle)
+    sin_a = np.sin(angle)
+    x_rot = dx * cos_a + dy * sin_a
+    y_rot = -dx * sin_a + dy * cos_a
+
+    # Calculate angle of each point from the center
+    theta = np.arctan2(y_rot, x_rot)
+
+    # Calculate expected radius to ellipse at each angle
+    # For ellipse: r(theta) = (a*b) / sqrt((b*cos(theta))^2 + (a*sin(theta))^2)
+    cos_theta = np.cos(theta)
+    sin_theta = np.sin(theta)
+    r_ellipse = (a * b) / np.sqrt((b * cos_theta) ** 2 + (a * sin_theta) ** 2)
+
+    # Calculate actual distance from center for each point
+    r_actual = np.sqrt(x_rot**2 + y_rot**2)
+
+    # Distance to ellipse edge
+    distance = np.abs(r_actual - r_ellipse)
+
+    # Points are inliers if distance is below threshold
+    inlier_mask = distance < thresh
+
+    return inlier_mask
+
+
+def fit_ellipse_RANSAC(points: np.ndarray, num_iter: int, thresh: float) -> tuple:
+    """Fit an ellipse to a set of noisy points using RANSAC.
+
+    Args:
+        points (np.ndarray): N x 2 array of (x, y) points. Requires N >= 5.
+        num_iter (int): Number of iterations to run the RANSAC loop for.
+        thresh (float): Inlier threshold in pixels (distance from point to ellipse).
+
+    Returns:
+        tuple: ((cx, cy), (major_axis, minor_axis), angle)
+
+    Raises:
+        ValueError: If < 5 points are supplied.
+        ValueError: If no ellipse can be fitted to the given points.
+    """
+    if len(points) < 5:
+        raise ValueError("We need at least 5 points to fit an ellipse.")
+
+    best_inlier_mask = np.zeros(len(points), dtype=bool)
+    best_ellipse = None
+
+    for _ in range(num_iter):
+        sample_idxs = np.random.choice(np.arange(len(points)), size=5, replace=False)
+        sample_points = points[sample_idxs]
+
+        try:
+            ellipse = fit_ellipse_cv2(sample_points)
+            inlier_mask = _get_ellipse_inliers(points, ellipse, thresh)
+            count = np.count_nonzero(inlier_mask)
+
+            if count > np.count_nonzero(best_inlier_mask):
+                best_inlier_mask = inlier_mask
+                best_ellipse = ellipse
+        except cv2.error:
+            # Skip if ellipse fitting fails for this sample
+            continue
+
+    if best_ellipse is None:
+        raise ValueError("Could not fit an ellipse to the given points.")
+
+    # Refinement
+    inlier_points = points[best_inlier_mask]
+    if len(inlier_points) >= 5:
+        best_ellipse = fit_ellipse_cv2(inlier_points)
+
+    return best_ellipse, inlier_points
+
+
+def get_ellipse_point_correspondences(
+    cx: float,
+    cy: float,
+    semi_major: float,
+    semi_minor: float,
+    angle_deg: float,
+    object_semi_major: float,
+    object_semi_minor: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Get image-object point correspondences for a detected ellipse.
+
+    Args:
+        cx (float): x-coordinate of the detected ellipse's center.
+        cy (float): y-coordinate of the detected ellipse's center.
+        semi_major (float): Semi-major axis of the detected ellipse.
+        semi_minor (float): Semi-minor axis of the detected ellipse.
+        angle_deg (float): Rotation angle of the detected ellipse in degrees.
+        object_semi_major (float): Semi-major axis of the real-world ellipse.
+        object_semi_minor (float): Semi-minor axis of the real-world ellipse.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: image_points, object_points
+    """
+    # An ellipse is uniquely defined by 5 points
+    num_points = 5
+
+    # Generate image points on the detected ellipse
+    image_points = get_ellipse_points(
+        cx, cy, semi_major, semi_minor, angle_deg, num_points
+    )
+
+    # Generate object points on the real-world ellipse (assumed axis-aligned)
+    object_points_xy = get_ellipse_points(
+        0.0, 0.0, object_semi_major, object_semi_minor, 0.0, num_points
+    )
+    object_points = np.column_stack([object_points_xy, np.zeros(num_points)])
+
     return image_points, object_points
