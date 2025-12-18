@@ -5,4 +5,8 @@
 
 import numpy as np
 
-HELIPAD_RADIUS = 0.762
+HELIPAD_RADII = {
+    "inner_circle": 0.3048,
+    "outer_circle": 0.762,
+}
+

@@ -1,4 +1,7 @@
+from operator import attrgetter
+
 import cv2
+import numpy as np
 import rclpy
 import tf2_ros
 from foxglove_msgs.msg import ImageAnnotations, PointsAnnotation
@@ -17,7 +20,7 @@ from tf_transformations import (
 from yolo_msgs.msg import DetectionArray
 
 from image_processing.utils.image_annotations import get_image_annotations
-from pose_estimator.config.robotx26_object_points import HELIPAD_RADIUS
+from pose_estimator.config.robotx26_object_points import HELIPAD_RADII
 from pose_estimator.utils.circles import (
     fit_ellipse_RANSAC,
     get_ellipse_point_correspondences,
@@ -30,6 +33,11 @@ from pose_estimator.utils.detections import (
 )
 from pose_estimator.utils.pose_estimator import get_object_pose
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+
+HELIPAD_ANNOTATION_COLORS = {
+    "outer_circle": "#e6194b",
+    "inner_circle": "#3cb44b",
+}
 
 
 class HelipadPoseEstimator(PoseEstimatorNode):
@@ -100,6 +108,7 @@ class HelipadPoseEstimator(PoseEstimatorNode):
         )
 
         self.is_setup = False
+        self.get_logger().info("HelipadPoseEstimator node initialized.")
 
     def get_base_link_to_camera_transform(self) -> tuple[bool, Transform | None]:
         camera_frame_id = self.camera.frame_id
@@ -135,7 +144,7 @@ class HelipadPoseEstimator(PoseEstimatorNode):
         filtered_detections = filter_detections_by_num_points(detections_msg, 3)
 
         # Only include relevant classes
-        relevant_classes = ["helipad"]
+        relevant_classes = ["outer_circle", "inner_circle"]
         required_objects = 1
 
         best_detections = get_best_detections_per_class(
@@ -149,43 +158,70 @@ class HelipadPoseEstimator(PoseEstimatorNode):
             )
             return
 
-        # Match image points and object points
-        detection_polygon = get_detection_polygon(best_detections["helipad"])
-        detection_convex_hull = ConvexHull(detection_polygon)
-        detection_convex_hull_coords = detection_polygon[detection_convex_hull.vertices]
+        image_points = np.empty((0, 2), dtype=np.float32)
+        object_points = np.empty((0, 3), dtype=np.float32)
+        vis_point_sets = []
+        inlier_point_sets = []
 
-        ellipse, inlier_points = fit_ellipse_RANSAC(
-            detection_convex_hull_coords, num_iter=1000, thresh=5.0
-        )
+        for cls, detection in best_detections.items():
+            helipad_radius = HELIPAD_RADII[cls]
 
-        (fit_cx, fit_cy), (fit_axis1, fit_axis2), fit_angle = ellipse
-        fit_r1, fit_r2 = fit_axis1 / 2, fit_axis2 / 2
-        image_points, object_points = get_ellipse_point_correspondences(
-            fit_cx,
-            fit_cy,
-            fit_r1,
-            fit_r2,
-            fit_angle,
-            object_semi_major=HELIPAD_RADIUS,
-            object_semi_minor=HELIPAD_RADIUS,
-        )
+            detection_polygon = get_detection_polygon(detection)
+            detection_convex_hull = ConvexHull(detection_polygon)
+            detection_convex_hull_coords = detection_polygon[
+                detection_convex_hull.vertices
+            ]
+
+            # We need 5 points to fit an ellipse
+            num_convex_hull_points = len(detection_convex_hull_coords)
+            if num_convex_hull_points < 5:
+                self.get_logger().warn(
+                    f"""Insufficient points on convex hull.
+                    Received: {num_convex_hull_points}, require: {5}."""
+                )
+                continue
+
+            ellipse, inlier_points = fit_ellipse_RANSAC(
+                detection_convex_hull_coords, num_iter=1000, thresh=5.0
+            )
+            inlier_point_sets.append([inlier_points])
+
+            (fit_cx, fit_cy), (fit_axis1, fit_axis2), fit_angle = ellipse
+            fit_r1, fit_r2 = fit_axis1 / 2, fit_axis2 / 2
+            image_points_ellipse, object_points_ellipse = (
+                get_ellipse_point_correspondences(
+                    fit_cx,
+                    fit_cy,
+                    inlier_points,
+                    object_semi_major=helipad_radius,
+                    object_semi_minor=helipad_radius,
+                )
+            )
+            image_points = np.vstack([image_points, image_points_ellipse])
+            object_points = np.vstack([object_points, object_points_ellipse])
+
+            vis_points = get_ellipse_points(
+                fit_cx, fit_cy, fit_r1, fit_r2, fit_angle, 20
+            )
+            vis_point_sets.append([vis_points])
 
         # Publish debug annotations
-        vis_points = get_ellipse_points(fit_cx, fit_cy, fit_r1, fit_r2, fit_angle, 20)
+        annotation_colors = [
+            HELIPAD_ANNOTATION_COLORS[cls] for cls in best_detections.keys()
+        ]
         ellipse_annotation = get_image_annotations(
-            detections_msg.header, [[vis_points]]
+            detections_msg.header,
+            vis_point_sets,
+            colors=annotation_colors,
         )
         self.ellipse_annotation_publisher.publish(ellipse_annotation)
         inlier_points_annotation = get_image_annotations(
             detections_msg.header,
-            [[inlier_points]],
+            inlier_point_sets,
+            colors=annotation_colors,
             points_annotation_type=PointsAnnotation.POINTS,
         )
         self.inlier_points_publisher.publish(inlier_points_annotation)
-
-        self.get_logger().info(
-            f"Object points:\n{object_points}\nImage points:\n{image_points}"
-        )
 
         assert (
             object_points.shape[0] == image_points.shape[0]
@@ -196,7 +232,7 @@ class HelipadPoseEstimator(PoseEstimatorNode):
             # the matched points for one detection may be at an offset from the matched points
             # for another. Setting a lower max re-projection error may result in a more confident
             # pose estimator, but it may also result in no inliers being found.
-            rvec, tvec, inliers = get_object_pose(
+            _, tvec, inliers = get_object_pose(
                 self.camera, object_points, image_points, max_reprojection_error=100
             )
 
@@ -209,8 +245,13 @@ class HelipadPoseEstimator(PoseEstimatorNode):
             self.get_logger().warn(f"Pose estimation failed: {e}")
             return
 
-        odom_to_base_link_rotation = odom_ned_msg.pose.pose.orientation
-        base_link_to_camera_rotation = self.base_link_to_camera_tf.rotation
+        # We know that the object has no roll or pitch in the odom_ned frame
+        # So we publish the transform so that the helipad has the same orientation as the odom_ned frame
+        get_quat_list = attrgetter("x", "y", "z", "w")
+        odom_to_base_link_rotation = get_quat_list(odom_ned_msg.pose.pose.orientation)
+        base_link_to_camera_rotation = get_quat_list(
+            self.base_link_to_camera_tf.rotation
+        )
         odom_to_camera_rotation = quaternion_multiply(
             odom_to_base_link_rotation, base_link_to_camera_rotation
         )

@@ -45,8 +45,7 @@ setup(
             "slalom_yaw_score_node = pose_estimator.slalom_yaw_score:main",
             "paired_objects_tracker_node = pose_estimator.paired_objects_tracker_node:main",
             "floor_pose_estimator_node = pose_estimator.floor_pose_estimator_node:main",
-            "helipad_circle_pose_estimator_node = pose_estimator.helipad_circle_pose_estimator_node:main",
-            "helipad_ellipse_pose_estimator_node = pose_estimator.helipad_ellipse_pose_estimator_node:main",
+            "helipad_pose_estimator_node = pose_estimator.helipad_pose_estimator_node:main",
         ],
     },
 )

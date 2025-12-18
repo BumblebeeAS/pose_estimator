@@ -357,13 +357,11 @@ def fit_ellipse_RANSAC(points: np.ndarray, num_iter: int, thresh: float) -> tupl
 def get_ellipse_point_correspondences(
     cx: float,
     cy: float,
-    semi_major: float,
-    semi_minor: float,
-    angle_deg: float,
+    inlier_points: np.ndarray,
     object_semi_major: float,
     object_semi_minor: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Get image-object point correspondences for a detected ellipse.
+    """Get image-object point correspondences for inlier points on a detected ellipse.
 
     Args:
         cx (float): x-coordinate of the detected ellipse's center.
@@ -371,24 +369,22 @@ def get_ellipse_point_correspondences(
         semi_major (float): Semi-major axis of the detected ellipse.
         semi_minor (float): Semi-minor axis of the detected ellipse.
         angle_deg (float): Rotation angle of the detected ellipse in degrees.
+        inlier_points (np.ndarray): M x 2 array of inlier (x, y) points on the detected ellipse.
         object_semi_major (float): Semi-major axis of the real-world ellipse.
         object_semi_minor (float): Semi-minor axis of the real-world ellipse.
 
     Returns:
         tuple[np.ndarray, np.ndarray]: image_points, object_points
     """
-    # An ellipse is uniquely defined by 5 points
-    num_points = 5
+    image_points = inlier_points
+    num_points = inlier_points.shape[0]
 
-    # Generate image points on the detected ellipse
-    image_points = get_ellipse_points(
-        cx, cy, semi_major, semi_minor, angle_deg, num_points
-    )
+    # Get the angles of the inlier points relative to the ellipse center
+    angles = np.arctan2(inlier_points[:, 1] - cy, inlier_points[:, 0] - cx)
 
-    # Generate object points on the real-world ellipse (assumed axis-aligned)
-    object_points_xy = get_ellipse_points(
-        0.0, 0.0, object_semi_major, object_semi_minor, 0.0, num_points
-    )
-    object_points = np.column_stack([object_points_xy, np.zeros(num_points)])
+    # Calculate corresponding object points on the real-world ellipse
+    x_obj = object_semi_major * np.cos(angles)
+    y_obj = object_semi_minor * np.sin(angles)
+    object_points = np.column_stack([x_obj, y_obj, np.zeros(num_points)])
 
     return image_points, object_points
