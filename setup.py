@@ -46,6 +46,7 @@ setup(
             "paired_objects_tracker_node = pose_estimator.paired_objects_tracker_node:main",
             "floor_pose_estimator_node = pose_estimator.floor_pose_estimator_node:main",
             "helipad_pose_estimator_node = pose_estimator.helipad_pose_estimator_node:main",
+            "tins_pose_estimator_depth_from_odom_node = pose_estimator.tins_pose_estimator_depth_from_odom_node:main",
         ],
     },
 )
