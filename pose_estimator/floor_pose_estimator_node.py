@@ -10,10 +10,10 @@ from pose_estimator.utils.detections import (
     get_top_k_detections_per_class,
     polygon_to_obb,
 )
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
 
 
-class FloorPoseEstimator(PoseEstimatorNode):
+class FloorPoseEstimator(PoseEstimatorTransformPubNode):
     def __init__(self):
         super().__init__("floor_pose_estimator_node")
 

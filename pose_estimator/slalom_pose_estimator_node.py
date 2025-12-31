@@ -23,10 +23,10 @@ from pose_estimator.utils.detections import (
     polygon_to_obb,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
 
 
-class SlalomPoseEstimator(PoseEstimatorNode):
+class SlalomPoseEstimator(PoseEstimatorTransformPubNode):
     def __init__(self):
         super().__init__("slalom_pose_estimator_node")
 
@@ -241,8 +241,12 @@ class SlalomPoseEstimator(PoseEstimatorNode):
                 self.get_logger().warn(f"Pose estimation failed: {e}")
                 continue
 
-            self.publish_transform(
-                tvec, rvec, detections_msg.header, f"{self.object_frame}_{layer}"
+            self.publish_data(
+                tvec,
+                rvec,
+                object_points,
+                detections_msg.header,
+                f"{self.object_frame}_{layer}",
             )
 
         end_time = self.get_clock().now()

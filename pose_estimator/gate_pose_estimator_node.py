@@ -14,10 +14,10 @@ from pose_estimator.utils.detections import (
     match_polygon_points_sequence,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
 
 
-class GatePoseEstimator(PoseEstimatorNode):
+class GatePoseEstimator(PoseEstimatorTransformPubNode):
     def __init__(self):
         super().__init__("gate_pose_estimator_node")
 
@@ -102,7 +102,7 @@ class GatePoseEstimator(PoseEstimatorNode):
             self.get_logger().warn(f"Pose estimation failed: {e}")
             return
 
-        self.publish_transform(tvec, rvec, msg.header, self.object_frame_id)
+        self.publish_data(tvec, rvec, object_points, msg.header, self.object_frame_id)
 
 
 def main(args=None):

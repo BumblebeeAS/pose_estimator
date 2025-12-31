@@ -14,13 +14,13 @@ from pose_estimator.utils.detections import (
     get_top_k_detections_per_class,
 )
 from pose_estimator.utils.pose_estimator import get_detection_centroid_position
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
 from pose_estimator.utils.ros_messages import get_transform_stamped
 
 _FRAME_SUFFIX = "from_table"
 
 
-class TrashPoseEstimatorDepthFromTable(PoseEstimatorNode):
+class TrashPoseEstimatorDepthFromTable(PoseEstimatorTransformPubNode):
     def __init__(self):
         super().__init__("trash_pose_estimator_depth_from_table_node")
 

@@ -15,12 +15,12 @@ from pose_estimator.utils.detections import (
     get_top_k_detections_per_class,
 )
 from pose_estimator.utils.pose_estimator import backproject_pixel
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
 
 _FRAME_SUFFIX = "from_odom"
 
 
-class TinsPoseEstimatorDepthFromOdom(PoseEstimatorNode):
+class TinsPoseEstimatorDepthFromOdom(PoseEstimatorTransformPubNode):
     def __init__(self):
         super().__init__("tins_pose_estimator_depth_from_odom_node")
 
@@ -174,7 +174,7 @@ class TinsPoseEstimatorDepthFromOdom(PoseEstimatorNode):
 
             frame_name = f"{class_name}_0/{_FRAME_SUFFIX}"
 
-            self.publish_transform(tvec, rvec, header, frame_name)
+            self.publish_data(tvec, rvec, obb, header, frame_name)
 
         end_time = self.get_clock().now()
         elapsed_time = (end_time - start_time).nanoseconds / 1e6

@@ -3,17 +3,17 @@ import logging
 import rclpy
 from bb_perception_msgs.msg import PointCorrespondencesStamped
 from rclpy.qos import qos_profile_sensor_data
-from image_processing.utils.ros_np_multiarray import to_numpy_f64
 
+from image_processing.utils.ros_np_multiarray import to_numpy_f64
 from pose_estimator.utils.pose_estimator import (
     filter_by_homography,
     get_object_pose,
     refine_object_pose,
 )
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
 
 
-class PointsPoseEstimator(PoseEstimatorNode):
+class PointsPoseEstimator(PoseEstimatorTransformPubNode):
 
     def __init__(self):
         super().__init__("points_pose_estimator")
@@ -69,7 +69,7 @@ class PointsPoseEstimator(PoseEstimatorNode):
             self.get_logger().warn(f"Pose estimation failed: {e}")
             return
 
-        self.publish_transform(tvec, rvec, msg.header, msg.object_frame_id)
+        self.publish_data(tvec, rvec, object_points, msg.header, msg.object_frame_id)
 
 
 def main(args=None):

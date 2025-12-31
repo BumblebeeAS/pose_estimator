@@ -1,5 +1,4 @@
-from typing import Dict, List
-
+import numpy as np
 from cv_bridge import CvBridge
 from rclpy.qos import qos_profile_sensor_data
 from yolo_msgs.msg import DetectionArray
@@ -11,10 +10,10 @@ from pose_estimator.utils.detections import (
 from pose_estimator.utils.pose_estimator import (
     get_object_pose_from_detection_using_best_fit_quad,
 )
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
 
 
-class BestFitQuadPoseEstimator(PoseEstimatorNode):
+class BestFitQuadPoseEstimator(PoseEstimatorTransformPubNode):
     """
     Estimates pose of each detection using the best-fit quadrilateral of the boundary
     of its mask. See `get_object_pose_from_detection_using_best_fit_quad` for details.
@@ -28,8 +27,8 @@ class BestFitQuadPoseEstimator(PoseEstimatorNode):
 
     def __init__(
         self,
-        object_points: Dict[str, List[List[float]]],
-        frame_name_remap: Dict[str, str],
+        object_points: dict[str, list[tuple[float, float]]],
+        frame_name_remap: dict[str, str],
     ):
         """Create a BestFitQuadPoseEstimator node.
 
@@ -77,6 +76,7 @@ class BestFitQuadPoseEstimator(PoseEstimatorNode):
 
         for detection in detections:
             object_polygon = self.object_points[detection.class_name]
+            object_polygon = np.array(object_polygon, dtype=np.float32)
 
             try:
                 rvec, tvec = get_object_pose_from_detection_using_best_fit_quad(
@@ -87,4 +87,6 @@ class BestFitQuadPoseEstimator(PoseEstimatorNode):
                 return
 
             frame_name = self.frame_name_remap[detection.class_name]
-            self.publish_transform(tvec, rvec, detections_msg.header, frame_name)
+            self.publish_data(
+                tvec, rvec, object_polygon, detections_msg.header, frame_name
+            )

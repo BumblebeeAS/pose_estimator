@@ -32,7 +32,7 @@ from pose_estimator.utils.detections import (
     get_detection_polygon,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorPosePubNode
 
 HELIPAD_ANNOTATION_COLORS = {
     "outer_circle": "#e6194b",
@@ -40,7 +40,7 @@ HELIPAD_ANNOTATION_COLORS = {
 }
 
 
-class HelipadPoseEstimator(PoseEstimatorNode):
+class HelipadPoseEstimator(PoseEstimatorPosePubNode):
     def __init__(self):
         super().__init__("helipad_pose_estimator_node")
 
@@ -136,7 +136,7 @@ class HelipadPoseEstimator(PoseEstimatorNode):
                     "Failed to get base_link to camera transform. Cannot proceed with pose estimation."
                 )
                 return
-            self.base_link_to_camera_tf = base_link_to_camera_tf
+            self.base_link_to_camera_tf: Transform = base_link_to_camera_tf
             self.is_setup = True
             self.get_logger().info("Successfully set up helipad pose estimator.")
 
@@ -259,8 +259,12 @@ class HelipadPoseEstimator(PoseEstimatorNode):
         R = quaternion_matrix(camera_to_odom_rotation)[:3, :3]
         camera_to_odom_rvec, _ = cv2.Rodrigues(R)
 
-        self.publish_transform(
-            tvec, camera_to_odom_rvec, detections_msg.header, self.object_frame_id
+        self.publish_data(
+            tvec,
+            camera_to_odom_rvec,
+            object_points,
+            detections_msg.header,
+            self.object_frame_id,
         )
 
 
