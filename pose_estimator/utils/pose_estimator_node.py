@@ -18,6 +18,7 @@ from transforms3d.quaternions import mat2quat
 from pose_estimator.utils.PinholeCamera import PinholeCamera
 from pose_estimator.utils.pose_estimator import estimate_covariance
 from pose_estimator.utils.ros_messages import (
+    get_pose_stamped,
     get_pose_with_covariance_stamped,
     get_transform_stamped,
 )
@@ -159,17 +160,7 @@ class PoseEstimatorPosePubNode(PoseEstimatorNode):
             self.get_logger().warn(f"Rodrigues conversion failed: {e}")
             return
 
-        pose = PoseStamped()
-        pose.header = header
-        pose.header.frame_id = object_frame_id
-        pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = t
-        (
-            pose.pose.orientation.x,
-            pose.pose.orientation.y,
-            pose.pose.orientation.z,
-            pose.pose.orientation.w,
-        ) = q
-
+        pose = get_pose_stamped(header, t, q)
         self.pose_publisher.publish(pose)
 
 

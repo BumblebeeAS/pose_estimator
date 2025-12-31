@@ -2,6 +2,7 @@ from typing import List
 
 from geometry_msgs.msg import (
     Point,
+    PoseStamped,
     PoseWithCovarianceStamped,
     Quaternion,
     TransformStamped,
@@ -9,6 +10,14 @@ from geometry_msgs.msg import (
 )
 from numpy.typing import ArrayLike
 from std_msgs.msg import Header
+
+
+def get_pose_stamped(header: Header, t: ArrayLike, q: ArrayLike):
+    pose_stamped = PoseStamped()
+    pose_stamped.header = header
+    pose_stamped.pose.position = Point(x=t[0], y=t[1], z=t[2])
+    pose_stamped.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+    return pose_stamped
 
 
 def get_pose_with_covariance_stamped(
@@ -31,4 +40,5 @@ def get_transform_stamped(
     transform_stamped.child_frame_id = child_frame_id
     transform_stamped.transform.translation = Vector3(x=t[0], y=t[1], z=t[2])
     transform_stamped.transform.rotation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+    return transform_stamped
     return transform_stamped
