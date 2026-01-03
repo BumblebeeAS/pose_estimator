@@ -3,6 +3,7 @@ import numpy as np
 import rclpy
 import tf2_ros
 from bb_perception_msgs.srv import TrashToggleFrame
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
@@ -15,12 +16,12 @@ from pose_estimator.utils.detections import (
     get_top_k_detections_per_class,
 )
 from pose_estimator.utils.pose_estimator import backproject_pixel
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorPosePubNode
 
 _FRAME_SUFFIX = "from_odom"
 
 
-class TinsPoseEstimatorDepthFromOdom(PoseEstimatorTransformPubNode):
+class TinsPoseEstimatorDepthFromOdom(PoseEstimatorPosePubNode):
     def __init__(self):
         super().__init__("tins_pose_estimator_depth_from_odom_node")
 
@@ -74,6 +75,17 @@ class TinsPoseEstimatorDepthFromOdom(PoseEstimatorTransformPubNode):
             self.toggle_frame_callback,
         )
         self.is_enabled = False
+
+    @property
+    def pose_publishers(self):
+        return {
+            f"{color}_tin_0/{_FRAME_SUFFIX}": self.create_publisher(
+                PoseStamped,
+                f"{color}_tin_0/{_FRAME_SUFFIX}/pose",
+                qos_profile_sensor_data,
+            )
+            for color in ["red", "green", "blue"]
+        }
 
     def toggle_frame_callback(
         self, request: TrashToggleFrame.Request, response: TrashToggleFrame.Response

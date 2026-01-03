@@ -7,8 +7,9 @@ from abc import ABC, abstractmethod
 import cv2
 import numpy as np
 import tf2_ros
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.node import Node
+from rclpy.publisher import Publisher
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.wait_for_message import wait_for_message
 from sensor_msgs.msg import CameraInfo
@@ -130,18 +131,18 @@ class PoseEstimatorTransformPubNode(PoseEstimatorNode):
 class PoseEstimatorPosePubNode(PoseEstimatorNode):
     """Publishes only PoseStamped (no TF)."""
 
-    def __init__(self, name):
+    def __init__(self, name: str) -> None:
         super().__init__(name)
 
-        output_pose_topic = (
-            self.declare_parameter("output_pose_topic", "pose_stamped")
-            .get_parameter_value()
-            .string_value
-        )
+    @property
+    @abstractmethod
+    def pose_publishers(self) -> dict[str, Publisher]:
+        """Dictionary of pose publishers for different object frame IDs.
 
-        self.pose_publisher = self.create_publisher(
-            PoseStamped, output_pose_topic, qos_profile_sensor_data
-        )
+        Returns:
+            dict[str, Publisher]: Dictionary mapping object frame IDs to PoseStamped publishers.
+        """
+        pass
 
     def publish_data(
         self,
@@ -161,7 +162,7 @@ class PoseEstimatorPosePubNode(PoseEstimatorNode):
             return
 
         pose = get_pose_stamped(header, t, q)
-        self.pose_publisher.publish(pose)
+        self.pose_publishers[object_frame_id].publish(pose)
 
 
 class PoseEstimatorDataPubNode(PoseEstimatorNode):

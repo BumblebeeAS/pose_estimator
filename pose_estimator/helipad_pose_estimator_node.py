@@ -5,7 +5,8 @@ import numpy as np
 import rclpy
 import tf2_ros
 from foxglove_msgs.msg import ImageAnnotations, PointsAnnotation
-from geometry_msgs.msg import Transform
+from geometry_msgs.msg import PoseStamped, Transform
+from image_processing.utils.image_annotations import get_image_annotations
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
 from rclpy.qos import qos_profile_sensor_data
@@ -19,7 +20,6 @@ from tf_transformations import (
 )
 from yolo_msgs.msg import DetectionArray
 
-from image_processing.utils.image_annotations import get_image_annotations
 from pose_estimator.config.robotx26_object_points import HELIPAD_RADII
 from pose_estimator.utils.circles import (
     fit_ellipse_RANSAC,
@@ -44,6 +44,11 @@ class HelipadPoseEstimator(PoseEstimatorPosePubNode):
     def __init__(self):
         super().__init__("helipad_pose_estimator_node")
 
+        self.output_pose_topic = (
+            self.declare_parameter("output_pose_topic", "helipad/pose")
+            .get_parameter_value()
+            .string_value
+        )
         self.object_frame_id = (
             self.declare_parameter("object_frame_id", "helipad")
             .get_parameter_value()
@@ -90,7 +95,7 @@ class HelipadPoseEstimator(PoseEstimatorPosePubNode):
         )
         self.time_sync = ApproximateTimeSynchronizer(
             fs=[self.detections_sub, self.odom_ned_sub],
-            queue_size=200,
+            queue_size=100,
             slop=0.1,
         )
         self.time_sync.registerCallback(self.detections_callback)
@@ -109,6 +114,14 @@ class HelipadPoseEstimator(PoseEstimatorPosePubNode):
 
         self.is_setup = False
         self.get_logger().info("HelipadPoseEstimator node initialized.")
+
+    @property
+    def pose_publishers(self):
+        return {
+            self.object_frame_id: self.create_publisher(
+                PoseStamped, self.output_pose_topic, qos_profile_sensor_data
+            )
+        }
 
     def get_base_link_to_camera_transform(self) -> tuple[bool, Transform | None]:
         camera_frame_id = self.camera.frame_id
@@ -182,7 +195,7 @@ class HelipadPoseEstimator(PoseEstimatorPosePubNode):
                 continue
 
             ellipse, inlier_points = fit_ellipse_RANSAC(
-                detection_convex_hull_coords, num_iter=1000, thresh=5.0
+                detection_convex_hull_coords, num_iter=200, thresh=5.0
             )
             inlier_point_sets.append([inlier_points])
 
