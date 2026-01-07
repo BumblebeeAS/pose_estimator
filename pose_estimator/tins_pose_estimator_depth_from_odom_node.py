@@ -18,8 +18,6 @@ from pose_estimator.utils.detections import (
 from pose_estimator.utils.pose_estimator import backproject_pixel
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorPosePubNode
 
-_FRAME_SUFFIX = "from_odom"
-
 
 class TinsPoseEstimatorDepthFromOdom(PoseEstimatorPosePubNode):
     def __init__(self):
@@ -76,15 +74,22 @@ class TinsPoseEstimatorDepthFromOdom(PoseEstimatorPosePubNode):
         )
         self.is_enabled = False
 
+        self._red_tins_publisher = self.create_publisher(
+            PoseStamped, "red_tin_0/from_odom/pose", qos_profile_sensor_data
+        )
+        self._green_tins_publisher = self.create_publisher(
+            PoseStamped, "green_tin_0/from_odom/pose", qos_profile_sensor_data
+        )
+        self._blue_tins_publisher = self.create_publisher(
+            PoseStamped, "blue_tin_0/from_odom/pose", qos_profile_sensor_data
+        )
+
     @property
     def pose_publishers(self):
         return {
-            f"{color}_tin_0/{_FRAME_SUFFIX}": self.create_publisher(
-                PoseStamped,
-                f"{color}_tin_0/{_FRAME_SUFFIX}/pose",
-                qos_profile_sensor_data,
-            )
-            for color in ["red", "green", "blue"]
+            "red_tin_0": self._red_tins_publisher,
+            "green_tin_0": self._green_tins_publisher,
+            "blue_tin_0": self._blue_tins_publisher,
         }
 
     def toggle_frame_callback(
@@ -184,7 +189,7 @@ class TinsPoseEstimatorDepthFromOdom(PoseEstimatorPosePubNode):
             translation = np.array([X, Y, object_to_camera_depth])
             tvec = translation.reshape((3, 1))
 
-            frame_name = f"{class_name}_0/{_FRAME_SUFFIX}"
+            frame_name = f"{class_name}_0"
 
             self.publish_data(tvec, rvec, obb, header, frame_name)
 

@@ -7,7 +7,8 @@ from abc import ABC, abstractmethod
 import cv2
 import numpy as np
 import tf2_ros
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from rclpy.qos import qos_profile_sensor_data
@@ -139,6 +140,8 @@ class PoseEstimatorPosePubNode(PoseEstimatorNode):
     def pose_publishers(self) -> dict[str, Publisher]:
         """Dictionary of pose publishers for different object frame IDs.
 
+        Warning: Do not create publishers here, as this property may be called multiple times.
+
         Returns:
             dict[str, Publisher]: Dictionary mapping object frame IDs to PoseStamped publishers.
         """
@@ -163,6 +166,35 @@ class PoseEstimatorPosePubNode(PoseEstimatorNode):
 
         pose = get_pose_stamped(header, t, q)
         self.pose_publishers[object_frame_id].publish(pose)
+
+
+class PoseEstimatorSinglePosePubNode(PoseEstimatorPosePubNode):
+    """Publishes PoseStamped to a single output pose topic."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+
+        output_pose_topic = (
+            self.declare_parameter("output_pose_topic", "pose")
+            .get_parameter_value()
+            .string_value
+        )
+        self.object_frame_id = (
+            self.declare_parameter(
+                "object_frame_id",
+                descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING),
+            )
+            .get_parameter_value()
+            .string_value
+        )
+
+        self._pose_publisher = self.create_publisher(
+            PoseStamped, output_pose_topic, qos_profile_sensor_data
+        )
+
+    @property
+    def pose_publishers(self) -> dict[str, Publisher]:
+        return {self.object_frame_id: self._pose_publisher}
 
 
 class PoseEstimatorDataPubNode(PoseEstimatorNode):

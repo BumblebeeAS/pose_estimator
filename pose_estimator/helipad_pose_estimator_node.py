@@ -5,7 +5,7 @@ import numpy as np
 import rclpy
 import tf2_ros
 from foxglove_msgs.msg import ImageAnnotations, PointsAnnotation
-from geometry_msgs.msg import PoseStamped, Transform
+from geometry_msgs.msg import Transform
 from image_processing.utils.image_annotations import get_image_annotations
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
@@ -32,7 +32,7 @@ from pose_estimator.utils.detections import (
     get_detection_polygon,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorPosePubNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorSinglePosePubNode
 
 HELIPAD_ANNOTATION_COLORS = {
     "outer_circle": "#e6194b",
@@ -40,20 +40,10 @@ HELIPAD_ANNOTATION_COLORS = {
 }
 
 
-class HelipadPoseEstimator(PoseEstimatorPosePubNode):
+class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
     def __init__(self):
         super().__init__("helipad_pose_estimator_node")
 
-        self.output_pose_topic = (
-            self.declare_parameter("output_pose_topic", "helipad/pose")
-            .get_parameter_value()
-            .string_value
-        )
-        self.object_frame_id = (
-            self.declare_parameter("object_frame_id", "helipad")
-            .get_parameter_value()
-            .string_value
-        )
         input_detections_topic = (
             self.declare_parameter("input_detections_topic", "yolo/detections")
             .get_parameter_value()
@@ -114,14 +104,6 @@ class HelipadPoseEstimator(PoseEstimatorPosePubNode):
 
         self.is_setup = False
         self.get_logger().info("HelipadPoseEstimator node initialized.")
-
-    @property
-    def pose_publishers(self):
-        return {
-            self.object_frame_id: self.create_publisher(
-                PoseStamped, self.output_pose_topic, qos_profile_sensor_data
-            )
-        }
 
     def get_base_link_to_camera_transform(self) -> tuple[bool, Transform | None]:
         camera_frame_id = self.camera.frame_id
