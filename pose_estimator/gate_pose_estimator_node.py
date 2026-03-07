@@ -14,10 +14,14 @@ from pose_estimator.utils.detections import (
     match_polygon_points_sequence,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
+from pose_estimator.utils.pose_estimator_node import (
+    PoseEstimatorDataPubNode,
+    PoseEstimatorPosePubNode,
+    PoseEstimatorTransformPubNode,
+)
 
 
-class GatePoseEstimator(PoseEstimatorTransformPubNode):
+class GatePoseEstimator(PoseEstimatorDataPubNode):
     def __init__(self):
         super().__init__("gate_pose_estimator_node")
 
@@ -35,6 +39,10 @@ class GatePoseEstimator(PoseEstimatorTransformPubNode):
             self.declare_parameter("from_front", True).get_parameter_value().bool_value
         )
 
+        # self._gate_pose_publisher = self.create_publisher(
+        #     PoseStamped, f"{self.object_frame_id}/pose", qos_profile_sensor_data
+        # )
+
         self.detections_sub = self.create_subscription(
             DetectionArray,
             detections_topic,
@@ -46,6 +54,10 @@ class GatePoseEstimator(PoseEstimatorTransformPubNode):
             self.object_points = GATE_FRONT_OBJECT_POINTS_DICT
         else:
             self.object_points = GATE_BACK_OBJECT_POINTS_DICT
+
+    # @property
+    # def pose_publishers(self):
+    #     return {self.object_frame_id: self._gate_pose_publisher}
 
     def detections_callback(self, msg: DetectionArray):
         # We require at least 3 points for polygon creation
@@ -79,9 +91,9 @@ class GatePoseEstimator(PoseEstimatorTransformPubNode):
             [object_points, np.zeros((object_points.shape[0], 1))]
         )
 
-        assert (
-            object_points.shape[0] == image_points.shape[0]
-        ), "Number of object points and image points must match"
+        assert object_points.shape[0] == image_points.shape[0], (
+            "Number of object points and image points must match"
+        )
 
         try:
             # We set a large max re-projection error as the segmentation masks are noisy and
