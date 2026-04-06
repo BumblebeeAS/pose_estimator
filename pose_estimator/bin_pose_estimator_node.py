@@ -2,6 +2,7 @@ import numpy as np
 import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from yolo_msgs.msg import DetectionArray
+from geometry_msgs.msg import PoseStamped
 
 from pose_estimator.config.object_points import BIN_OBJECT_POINTS
 from pose_estimator.utils.detections import (
@@ -12,10 +13,10 @@ from pose_estimator.utils.detections import (
     match_polygon_points,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose, refine_object_pose
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorPosePubNode
 
 
-class BinPoseEstimator(PoseEstimatorTransformPubNode):
+class BinPoseEstimator(PoseEstimatorPosePubNode):
     def __init__(self):
         super().__init__("bin_pose_estimator_node")
 
@@ -36,6 +37,14 @@ class BinPoseEstimator(PoseEstimatorTransformPubNode):
             self.detections_callback,
             qos_profile_sensor_data,
         )
+
+        self._bin_pose_publisher = self.create_publisher(
+            PoseStamped, f"{self.object_frame_id}/pose", qos_profile_sensor_data
+        )
+
+    @property
+    def pose_publishers(self):
+        return {self.object_frame_id: self._bin_pose_publisher}
 
     def detections_callback(self, msg: DetectionArray):
         # We require at least 3 points for polygon creation
@@ -76,9 +85,9 @@ class BinPoseEstimator(PoseEstimatorTransformPubNode):
             [object_points, np.zeros((object_points.shape[0], 1))]
         )
 
-        assert (
-            object_points.shape[0] == image_points.shape[0]
-        ), "Number of object points and image points must match"
+        assert object_points.shape[0] == image_points.shape[0], (
+            "Number of object points and image points must match"
+        )
 
         try:
             # We can set a low max re-projection error and refine pose even though
