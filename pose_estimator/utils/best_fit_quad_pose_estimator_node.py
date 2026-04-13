@@ -1,5 +1,6 @@
 import numpy as np
 from cv_bridge import CvBridge
+from geometry_msgs.msg import PoseStamped
 from rclpy.qos import qos_profile_sensor_data
 from yolo_msgs.msg import DetectionArray
 
@@ -10,10 +11,13 @@ from pose_estimator.utils.detections import (
 from pose_estimator.utils.pose_estimator import (
     get_object_pose_from_detection_using_best_fit_quad,
 )
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
+from pose_estimator.utils.pose_estimator_node import (
+    PoseEstimatorPosePubNode,
+    PoseEstimatorTransformPubNode,
+)
 
 
-class BestFitQuadPoseEstimator(PoseEstimatorTransformPubNode):
+class BestFitQuadPoseEstimator(PoseEstimatorPosePubNode):
     """
     Estimates pose of each detection using the best-fit quadrilateral of the boundary
     of its mask. See `get_object_pose_from_detection_using_best_fit_quad` for details.
@@ -61,6 +65,15 @@ class BestFitQuadPoseEstimator(PoseEstimatorTransformPubNode):
             self.detections_callback,
             qos_profile_sensor_data,
         )
+
+    @property
+    def pose_publishers(self):
+        return {
+            frame_name: self.create_publisher(
+                PoseStamped, f"{frame_name}/pose", qos_profile_sensor_data
+            )
+            for frame_name in self.frame_name_remap.values()
+        }
 
     def detections_callback(self, detections_msg: DetectionArray):
         # We require at least 3 points for polygon creation
