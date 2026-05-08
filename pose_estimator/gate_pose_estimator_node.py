@@ -2,6 +2,7 @@ import numpy as np
 import rclpy
 from rclpy.qos import qos_profile_sensor_data
 from yolo_msgs.msg import DetectionArray
+from geometry_msgs.msg import PoseStamped
 
 from pose_estimator.config.object_points import (
     GATE_BACK_OBJECT_POINTS_DICT,
@@ -21,7 +22,7 @@ from pose_estimator.utils.pose_estimator_node import (
 )
 
 
-class GatePoseEstimator(PoseEstimatorDataPubNode):
+class GatePoseEstimator(PoseEstimatorPosePubNode):
     def __init__(self):
         super().__init__("gate_pose_estimator_node")
 
@@ -39,9 +40,9 @@ class GatePoseEstimator(PoseEstimatorDataPubNode):
             self.declare_parameter("from_front", True).get_parameter_value().bool_value
         )
 
-        # self._gate_pose_publisher = self.create_publisher(
-        #     PoseStamped, f"{self.object_frame_id}/pose", qos_profile_sensor_data
-        # )
+        self._gate_pose_publisher = self.create_publisher(
+            PoseStamped, f"{self.object_frame_id}/pose", qos_profile_sensor_data
+        )
 
         self.detections_sub = self.create_subscription(
             DetectionArray,
@@ -55,16 +56,16 @@ class GatePoseEstimator(PoseEstimatorDataPubNode):
         else:
             self.object_points = GATE_BACK_OBJECT_POINTS_DICT
 
-    # @property
-    # def pose_publishers(self):
-    #     return {self.object_frame_id: self._gate_pose_publisher}
+    @property
+    def pose_publishers(self):
+        return {self.object_frame_id: self._gate_pose_publisher}
 
     def detections_callback(self, msg: DetectionArray):
         # We require at least 3 points for polygon creation
         filtered_detections = filter_detections_by_num_points(msg, 3)
 
         # Only include relevant classes
-        relevant_classes = ["gate_sides_left", "gate_sides_right", "gate_center"]
+        relevant_classes = ["left_gate", "right_gate", "mid_gate"]
         required_objects = 2
 
         best_detections = get_best_detections_per_class(
