@@ -106,3 +106,10 @@ TORPEDO_OBJECT_POINTS_DICT = {
     "torpedo_1": [(0.0, 0.0), (0.0, 0.6096), (0.6096, 0.6096), (0.6096, 0.0)],
     "torpedo_2": [(0.0, 0.0), (0.0, 0.6096), (0.6096, 0.6096), (0.6096, 0.0)],
 }
+
+# Radii (m) of the two red-bordered torpedo holes.
+# small = 4" diameter (10.16 cm), large = 5" diameter (12.70 cm).
+RED_CIRCLE_RADII = {
+    "small": 0.0508,
+    "large": 0.0635,
+}
