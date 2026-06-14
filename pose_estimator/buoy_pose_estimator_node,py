@@ -142,7 +142,14 @@ class TrackManager:
         # Regnerate tracks given pose window using DBSCAN clustering
         self.tracks.clear()
         BuoyTrack._id_counter = 0
-        if not self.pose_window:
+        if (
+            not self.pose_window
+            or len(set(self.pose_history)) < self.required_detections
+        ):
+            self.logger.debug(
+                f"Warming up: {len(set(self.pose_history))} unique frames gathered, "
+                f"waiting for {self.required_detections} to build tracks."
+            )
             return
         colors = np.array([color for color, _ in self.pose_window])
         positions = np.array([pos for _, pos in self.pose_window])
@@ -189,6 +196,8 @@ class TrackManager:
             )
             return  # Only perform FFT at specified intervals
 
+        self.last_fft_time = current_time
+
         tracks_start_time = time.perf_counter()
         self.recompute_tracks()  # Ensure tracks are up to date before FFT
         tracks_end_time = time.perf_counter()
@@ -211,7 +220,6 @@ class TrackManager:
             f"Recomputed centroids in {(centroids_end_time - centroids_start_time)*1000:.2f} ms",
             throttle_duration_sec=1.0,
         )
-        self.last_fft_time = current_time
 
         for track in self.tracks.values():
             if len(track.pose_history) < self.required_detections:
