@@ -69,7 +69,7 @@ class PointsPoseEstimator(PoseEstimatorSinglePosePubNode):
             self.get_logger().warn(f"Pose estimation failed: {e}")
             return
 
-        self.publish_data(tvec, rvec, object_points, msg.header, msg.object_frame_id)
+        self.publish_data(tvec, rvec, object_points, msg.header, self.object_frame_id)
 
 
 def main(args=None):
