@@ -4,6 +4,8 @@ Pose estimation using PnP.
 
 ## Overview
 
+Task estimators subscribe to detections and / or point correspondences plus camera intrinsics, estimate a 3D pose with PnP / back-projection, and broadcast the result through TFs / poses.
+
 There are generally two approaches:
 
 Case 1: Object points are non-planar or homography cannot be well-estimated. Use only the inliers from RANSAC as homography estimation does not apply. Pose refinement, if applicable, is done on RANSAC inlier points.
