@@ -10,10 +10,10 @@ from pose_estimator.utils.pose_estimator import (
     get_object_pose,
     refine_object_pose,
 )
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorSinglePosePubNode
 
 
-class PointsPoseEstimator(PoseEstimatorTransformPubNode):
+class PointsPoseEstimator(PoseEstimatorSinglePosePubNode):
 
     def __init__(self):
         super().__init__("points_pose_estimator")
