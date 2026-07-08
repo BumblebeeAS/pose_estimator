@@ -10,10 +10,10 @@ from pose_estimator.utils.pose_estimator import (
     get_object_pose,
     refine_object_pose,
 )
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorTransformPubNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorSinglePosePubNode
 
 
-class PointsPoseEstimator(PoseEstimatorTransformPubNode):
+class PointsPoseEstimator(PoseEstimatorSinglePosePubNode):
 
     def __init__(self):
         super().__init__("points_pose_estimator")
@@ -69,7 +69,7 @@ class PointsPoseEstimator(PoseEstimatorTransformPubNode):
             self.get_logger().warn(f"Pose estimation failed: {e}")
             return
 
-        self.publish_data(tvec, rvec, object_points, msg.header, msg.object_frame_id)
+        self.publish_data(tvec, rvec, object_points, msg.header, self.object_frame_id)
 
 
 def main(args=None):
