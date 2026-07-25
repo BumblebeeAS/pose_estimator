@@ -7,13 +7,6 @@ import numpy as np
 import rclpy
 import tf_transformations
 from geometry_msgs.msg import PoseStamped
-from rclpy.publisher import Publisher
-from rclpy.qos import qos_profile_sensor_data
-from scipy import signal
-from sklearn.cluster import DBSCAN
-from tf2_ros import Buffer, TransformListener
-from yolo_msgs.msg import DetectionArray
-
 from pose_estimator.config.object_points import (
     BUOY_CENTER_OFFSET,
     BUOY_OBJECT_POINTS,
@@ -25,6 +18,12 @@ from pose_estimator.utils.detections import (
 )
 from pose_estimator.utils.pose_estimator import get_object_pose, refine_object_pose
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from rclpy.publisher import Publisher
+from rclpy.qos import qos_profile_sensor_data
+from scipy import signal
+from sklearn.cluster import DBSCAN
+from tf2_ros import Buffer, TransformListener
+from yolo_msgs.msg import DetectionArray
 
 
 class Color(Enum):
@@ -72,7 +71,6 @@ class TrackManager:
         temporal_window: float = 5.0,
         required_density: float = 0.8,
         virtual_sampling_rate: float = 30.0,
-        spatial_grid_size: float = 1.0,
         flashing_threshold: float = 1000.0,
         consistent_threshold: float = 0.35,
         cutoff_frequency: float = 3.0,
@@ -84,7 +82,6 @@ class TrackManager:
         self.temporal_window = temporal_window
         self.required_density = required_density
         self.virtual_sampling_rate = virtual_sampling_rate
-        self.spatial_grid_size = spatial_grid_size
         self.flashing_threshold = flashing_threshold
         self.consistent_threshold = consistent_threshold
         self.cutoff_frequency = cutoff_frequency
@@ -167,6 +164,7 @@ class TrackManager:
             track_colors = colors[mask]
             track = BuoyTrack()
             track_id = track.track_id
+            self.tracks[track_id] = track
 
             last_ts = None
             for color, world_position, timestamp in zip(
@@ -177,7 +175,6 @@ class TrackManager:
                     continue  # Skip duplicate timestamps within the same track
                 self._add_to_track(track_id, color, world_position, timestamp)
                 last_ts = timestamp
-            self.tracks[track_id] = track
 
     def recompute_centroids(self, current_time):
         for track in self.tracks.values():
@@ -377,11 +374,6 @@ class BuoyPoseEstimatorNode(PoseEstimatorNode):
             .get_parameter_value()
             .double_value
         )
-        spatial_grid_size = (
-            self.declare_parameter("spatial_grid_size", 1.0)
-            .get_parameter_value()
-            .double_value
-        )
         virtual_sampling_rate = (
             self.declare_parameter(
                 "virtual_sampling_rate", 10.0
@@ -424,7 +416,6 @@ class BuoyPoseEstimatorNode(PoseEstimatorNode):
             temporal_window,
             required_density,
             virtual_sampling_rate,
-            spatial_grid_size,
             flashing_threshold,
             consistent_threshold,
             cutoff_frequency,
