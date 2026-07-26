@@ -204,6 +204,13 @@ class TrackManager:
         # Once incoming detections are absorbed into individual buffers, clear the global buffer (Doc Section 2 Line 180)
         self.detection_buffer.clear()
 
+        if self.logger:
+            self.logger.info(
+                f"[associate_and_update] DBSCAN clustered {len(point_list)} points into {len(set(labels)) - (1 if -1 in labels else 0)} clusters, "
+                f"resulting in {len(self.tracks)} active tracks.",
+                throttle_duration_sec=2.0,
+            )
+
     def _add_observation_to_track(
         self, track_id: int, color: str, position: np.ndarray, timestamp: float
     ):
@@ -257,6 +264,12 @@ class TrackManager:
             del self.tracks[tid]
             if self.logger:
                 self.logger.debug(f"Pruned timed-out track ID {tid}.")
+
+        if to_delete and self.logger:
+            self.logger.info(
+                f"[prune_timeouts] Pruned {len(to_delete)} timed-out track(s): {to_delete}. Active tracks remaining: {len(self.tracks)}.",
+                throttle_duration_sec=2.0,
+            )
 
     def classify_tracks(self):
         """
@@ -386,6 +399,16 @@ class TrackManager:
             else:
                 track.published_state = DetectedBuoyColor.BLACK
 
+        if self.logger and self.tracks:
+            state_counts = {}
+            for track in self.tracks.values():
+                s = track.published_state.name if track.published_state else "UNCLASSIFIED"
+                state_counts[s] = state_counts.get(s, 0) + 1
+            self.logger.info(
+                f"[classify_tracks] Active track classifications: {state_counts}",
+                throttle_duration_sec=2.0,
+            )
+
     def deduplicate_singletons(self):
         """
         Layer 2 Deduplication: Entry (FLASHING_BLUE) and Exit (SOLID_BLUE) buoys are immortal singletons.
@@ -440,7 +463,8 @@ class TrackManager:
                     del self.tracks[dup_tid]
                     if self.logger:
                         self.logger.info(
-                            f"Merged duplicate singleton {singleton_type.name} track ID {dup_tid} into primary ID {primary_tid}."
+                            f"[deduplicate_singletons] Merged duplicate singleton {singleton_type.name} track ID {dup_tid} into primary ID {primary_tid}.",
+                            throttle_duration_sec=2.0,
                         )
 
 
@@ -669,6 +693,11 @@ class BuoyGateManagerNode(Node):
         ):
             self.track_manager.detection_buffer.popleft()
 
+        self.get_logger().info(
+            f"[_on_buoy_detections] Buffered {len(msg.detections)} detections, buffer size now {len(self.track_manager.detection_buffer)}.",
+            throttle_duration_sec=2.0,
+        )
+
     def _on_fft_timer(self):
         """Layer 2: Background association, FFT classification, pruning, deduplication, and visualization."""
         if not self.enable:
@@ -765,9 +794,11 @@ class BuoyGateManagerNode(Node):
                     ll = self._convert_to_ll(track.current_centroid)
                     if ll:
                         res.buoy_latlon = ll
+                self.get_logger().info(f"[_cb_get_entry] {res.message}", throttle_duration_sec=2.0)
                 return res
         res.found = False
         res.message = "Entry buoy (FLASHING_BLUE) not found."
+        self.get_logger().info(f"[_cb_get_entry] {res.message}", throttle_duration_sec=2.0)
         return res
 
     def _cb_get_exit(
@@ -793,9 +824,11 @@ class BuoyGateManagerNode(Node):
                     ll = self._convert_to_ll(track.current_centroid)
                     if ll:
                         res.buoy_latlon = ll
+                self.get_logger().info(f"[_cb_get_exit] {res.message}", throttle_duration_sec=2.0)
                 return res
         res.found = False
         res.message = "Exit buoy (SOLID_BLUE) not found."
+        self.get_logger().info(f"[_cb_get_exit] {res.message}", throttle_duration_sec=2.0)
         return res
 
     def _cb_extract_goal(
@@ -874,12 +907,11 @@ class BuoyGateManagerNode(Node):
                     rclpy.time.Time(),
                     rclpy.duration.Duration(seconds=0.1),
                 )
-                drone_yaw = _get_yaw_from_quaternion(
-                    base_transform.transform.rotation
-                )
+                drone_yaw = _get_yaw_from_quaternion(base_transform.transform.rotation)
             except Exception as e:
-                self.logger.warn(
-                    f"Failed to lookup drone heading from '{self.base_link_frame_id}': {e}"
+                self.get_logger().warn(
+                    f"Failed to lookup drone heading from '{self.base_link_frame_id}': {e}",
+                    throttle_duration_sec=2.0,
                 )
             v_forward = np.array([math.cos(drone_yaw), math.sin(drone_yaw)])
             if np.linalg.norm(v_forward) == 0.0:
@@ -983,6 +1015,7 @@ class BuoyGateManagerNode(Node):
             res.success = False
             res.goal_type = "INVALID"
             res.message = "No valid forward waypoints found."
+            self.get_logger().info(f"[_cb_extract_goal] {res.message}", throttle_duration_sec=2.0)
             return res
 
         # Distance Gating: minimum distance
@@ -1007,6 +1040,7 @@ class BuoyGateManagerNode(Node):
             if ll:
                 res.goal_latlon = ll
 
+        self.get_logger().info(f"[_cb_extract_goal] {res.message}", throttle_duration_sec=2.0)
         return res
 
     def _publish_markers(self):
