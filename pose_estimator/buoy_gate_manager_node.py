@@ -255,10 +255,11 @@ class TrackManager:
         to_delete = []
         for tid, track in self.tracks.items():
             if not track.is_immortal:
-                if current_time - track.last_observation_time > self.track_timeout:
+                if (
+                    current_time - track.last_observation_time > self.track_timeout
+                    or not track.pose_history
+                ):
                     to_delete.append(tid)
-            elif not track.pose_history:
-                to_delete.append(tid)
 
         for tid in to_delete:
             del self.tracks[tid]
