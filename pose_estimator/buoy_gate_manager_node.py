@@ -463,6 +463,7 @@ class BuoyGateManagerNode(Node):
         self.declare_parameter("get_exit_service", "get_exit")
 
         self.declare_parameter("world_frame_id", "map")
+        self.declare_parameter("base_link_frame_id", "base_link")
         self.declare_parameter("fft_timer_period", 0.5)
         self.declare_parameter("required_density", 0.8)
         self.declare_parameter("virtual_sampling_rate", 10.0)
@@ -498,6 +499,7 @@ class BuoyGateManagerNode(Node):
         self.get_exit_service_name = self.get_parameter("get_exit_service").value
 
         self.world_frame_id = self.get_parameter("world_frame_id").value
+        self.base_link_frame_id = self.get_parameter("base_link_frame_id").value
         self.fft_timer_period = self.get_parameter("fft_timer_period").value
         self.max_gate_width = self.get_parameter("max_gate_width").value
         self.vehicle_encasing_radius = self.get_parameter(
@@ -801,7 +803,6 @@ class BuoyGateManagerNode(Node):
     ) -> ExtractLocalGoal.Response:
         """Layer 3: Instantaneous local goal extraction with TF2 frame normalization and geodetic bridge."""
         vehicle_pos = None
-        vehicle_heading = req.current_heading
 
         if req.input_is_latlon:
             vehicle_pos = self._convert_from_ll(req.current_latlon)
@@ -832,40 +833,59 @@ class BuoyGateManagerNode(Node):
                     in_pose.pose.position.z,
                 ]
             )
-            vehicle_heading = _get_yaw_from_quaternion(in_pose.pose.orientation)
 
-        # Determine forward unit vector (3-tier fallback chain)
-        v_forward = np.array([math.cos(vehicle_heading), math.sin(vehicle_heading)])
-        if np.linalg.norm(v_forward) == 0.0 or (
-            req.input_is_latlon and req.current_heading == 0.0
-        ):
-            # Fallback 1: Course axis vector from Entry to Exit
-            entry_pos, exit_pos = None, None
-            for track in self.track_manager.tracks.values():
-                if (
-                    track.published_state == DetectedBuoyColor.FLASHING_BLUE
-                    and track.current_centroid is not None
-                ):
-                    entry_pos = track.current_centroid[:2]
-                elif (
-                    track.published_state == DetectedBuoyColor.SOLID_BLUE
-                    and track.current_centroid is not None
-                ):
-                    exit_pos = track.current_centroid[:2]
+        # Determine forward unit vector in world_frame_id (3-tier frame-intrinsic hierarchy)
+        v_forward = None
+
+        # Priority 1: Course axis vector from Entry to Exit buoys
+        entry_pos, exit_pos = None, None
+        for track in self.track_manager.tracks.values():
             if (
-                entry_pos is not None
-                and exit_pos is not None
-                and np.linalg.norm(exit_pos - entry_pos) > 0.1
+                track.published_state == DetectedBuoyColor.FLASHING_BLUE
+                and track.current_centroid is not None
             ):
-                diff = exit_pos - entry_pos
-                v_forward = diff / np.linalg.norm(diff)
+                entry_pos = track.current_centroid[:2]
             elif (
-                self.last_query_pos is not None
-                and np.linalg.norm(vehicle_pos[:2] - self.last_query_pos[:2]) > 0.1
+                track.published_state == DetectedBuoyColor.SOLID_BLUE
+                and track.current_centroid is not None
             ):
-                # Fallback 2: Vehicle motion vector
+                exit_pos = track.current_centroid[:2]
+        if (
+            entry_pos is not None
+            and exit_pos is not None
+            and np.linalg.norm(exit_pos - entry_pos) > 0.1
+        ):
+            diff = exit_pos - entry_pos
+            v_forward = diff / np.linalg.norm(diff)
+
+        # Priority 2: Vehicle (boat) trajectory motion vector
+        if v_forward is None and self.last_query_pos is not None:
+            if np.linalg.norm(vehicle_pos[:2] - self.last_query_pos[:2]) > 0.1:
                 diff = vehicle_pos[:2] - self.last_query_pos[:2]
                 v_forward = diff / np.linalg.norm(diff)
+
+        # Priority 3: Fall back to drone base_link heading in world_frame_id
+        if v_forward is None:
+            drone_yaw = 0.0
+            try:
+                base_transform = self.tf_buffer.lookup_transform(
+                    self.world_frame_id,
+                    self.base_link_frame_id,
+                    rclpy.time.Time(),
+                    rclpy.duration.Duration(seconds=0.1),
+                )
+                drone_yaw = _get_yaw_from_quaternion(
+                    base_transform.transform.rotation
+                )
+            except Exception as e:
+                self.logger.warn(
+                    f"Failed to lookup drone heading from '{self.base_link_frame_id}': {e}"
+                )
+            v_forward = np.array([math.cos(drone_yaw), math.sin(drone_yaw)])
+            if np.linalg.norm(v_forward) == 0.0:
+                v_forward = np.array([1.0, 0.0])
+            else:
+                v_forward = v_forward / np.linalg.norm(v_forward)
 
         self.last_query_pos = vehicle_pos.copy()
 
