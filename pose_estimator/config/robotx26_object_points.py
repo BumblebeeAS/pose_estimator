@@ -10,3 +10,7 @@ HELIPAD_RADII = {
     "outer_circle": 0.762,
 }
 
+WINDOW_OBJECT_POINTS_DICT = {
+    "left_window": [(0.0, 0.0), (0.21, 0.0), (0.21, 0.21), (0.0, 0.21)],
+    "right_window": [(0.0, 0.0), (0.21, 0.0), (0.21, 0.21), (0.0, 0.21)],
+}

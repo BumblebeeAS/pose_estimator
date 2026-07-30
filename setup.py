@@ -49,6 +49,7 @@ setup(
             "helipad_pose_estimator_node = pose_estimator.helipad_pose_estimator_node:main",
             "tins_pose_estimator_depth_from_odom_node = pose_estimator.tins_pose_estimator_depth_from_odom_node:main",
             "red_circle_pose_estimator_node = pose_estimator.red_circle_pose_estimator_node:main",
+            "dockwin_pose_estimator_node = pose_estimator.dockwin_pose_estimator_node:main",
         ],
     },
 )
