@@ -401,7 +401,11 @@ class TrackManager:
         if self.logger and self.tracks:
             state_counts = {}
             for track in self.tracks.values():
-                s = track.published_state.name if track.published_state else "UNCLASSIFIED"
+                s = (
+                    track.published_state.name
+                    if track.published_state
+                    else "UNCLASSIFIED"
+                )
                 state_counts[s] = state_counts.get(s, 0) + 1
             self.logger.info(
                 f"[classify_tracks] Active track classifications: {state_counts}",
@@ -793,11 +797,15 @@ class BuoyGateManagerNode(Node):
                     ll = self._convert_to_ll(track.current_centroid)
                     if ll:
                         res.buoy_latlon = ll
-                self.get_logger().info(f"[_cb_get_entry] {res.message}", throttle_duration_sec=2.0)
+                self.get_logger().info(
+                    f"[_cb_get_entry] {res.message}", throttle_duration_sec=2.0
+                )
                 return res
         res.found = False
         res.message = "Entry buoy (FLASHING_BLUE) not found."
-        self.get_logger().info(f"[_cb_get_entry] {res.message}", throttle_duration_sec=2.0)
+        self.get_logger().info(
+            f"[_cb_get_entry] {res.message}", throttle_duration_sec=2.0
+        )
         return res
 
     def _cb_get_exit(
@@ -823,11 +831,15 @@ class BuoyGateManagerNode(Node):
                     ll = self._convert_to_ll(track.current_centroid)
                     if ll:
                         res.buoy_latlon = ll
-                self.get_logger().info(f"[_cb_get_exit] {res.message}", throttle_duration_sec=2.0)
+                self.get_logger().info(
+                    f"[_cb_get_exit] {res.message}", throttle_duration_sec=2.0
+                )
                 return res
         res.found = False
         res.message = "Exit buoy (SOLID_BLUE) not found."
-        self.get_logger().info(f"[_cb_get_exit] {res.message}", throttle_duration_sec=2.0)
+        self.get_logger().info(
+            f"[_cb_get_exit] {res.message}", throttle_duration_sec=2.0
+        )
         return res
 
     def _cb_extract_goal(
@@ -1014,7 +1026,9 @@ class BuoyGateManagerNode(Node):
             res.success = False
             res.goal_type = "INVALID"
             res.message = "No valid forward waypoints found."
-            self.get_logger().info(f"[_cb_extract_goal] {res.message}", throttle_duration_sec=2.0)
+            self.get_logger().info(
+                f"[_cb_extract_goal] {res.message}", throttle_duration_sec=2.0
+            )
             return res
 
         # Distance Gating: minimum distance
@@ -1039,7 +1053,9 @@ class BuoyGateManagerNode(Node):
             if ll:
                 res.goal_latlon = ll
 
-        self.get_logger().info(f"[_cb_extract_goal] {res.message}", throttle_duration_sec=2.0)
+        self.get_logger().info(
+            f"[_cb_extract_goal] {res.message}", throttle_duration_sec=2.0
+        )
         return res
 
     def _publish_markers(self):
@@ -1118,3 +1134,90 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
+
+"""
+Description of General Behaviours: ANDY WRITE ONE
+1. _on_buoy_detections:
+    - Looks up transform from world to source (usually camera) and applies
+      transform to incoming buoy poses. Zeroes out z.
+    - Adds incoming buoy detections to a detection buffer
+    - Prunes detection buffer within temporal_window
+2. _on_fft_timer:
+    a. associate_and_update
+        - Lumps all existing tracks and buoy detections in buffer into 
+          all_positions. Keep track of their source (track or det) in point_sources
+        - Run DBSCAN clustering. TODO: Double check on the min_samples logic.
+        - Go through clusters using cluster_mask. 
+        - A cluster consisting only of track(s) are ignored. TODO: Consider combining?
+        - If there are clustered tracks alongside incoming detections, grab the first
+          track and add detections to track.
+        - Otherwise if there are clustered detections without an associated track, create
+          new track consisting of these detections.
+        - Since all detections have been accounted for, clear the buffer.
+        a1. _add_observation_to_track
+            - TODO: Not sure why there is a random timestamp check there...
+              Technically, the case for it is that if YOLO detections are clean i.e.
+              one place -> one detection only, there should not be two detections at the
+              same location at the same time. The check is to defend against that in the event
+              it happens.
+            - TODO: Should just use last_observation_time
+            - Simply adds to pose_history and right entries to various color timelines.
+              For example, RED will see red array get 1.0 but 0.0 for other color arrays.
+    b. prune_temporal_window
+        - Prunes the pose_history and color_timelines of tracks.
+    c. classify_tracks
+        - FFT baby (It is a glorified second layer classifier and I hope it works.
+        Fallback can be mode or some shit LOL)
+        - Must at least have some detections. TODO: Double check self.min_filter_samples
+        Supposed to a function of the order of the filter that we use.
+        - For FFT, underlying assumption is that the signal must be uniform at some 
+        frequency/rate. Defined by virtual_sampling_rate which in theory should be 
+        the YOLO detection rate. TODO: This must be checked.
+        - Interpolate. 
+        - Low pass filter to get rid of high frequencies. We only care about 1Hz anyway.
+        - For each color, get the highest magnitude frequency. Check that it is within 
+        target_freq to consider it as flashing.
+        - Grab dominant flashing color. 
+        - To further validate that it is indeed flashing, further check dc_presence (OHz)
+        magnitude. Because magnitudes have been normalized by num_samples, dc_presence
+        is akin to % time on i.e. a duty cycle. A flashing light cannot be on too often
+        and neither can it be off too often. This is is_valid_duty_cycle.
+        - Say something is flashing only if 1Hz magnitude is above some threshold x valid
+        duty cycle.
+        - If not flashing, need to figure out if consistent blue or black.
+        - Recall that dc_presence is duty cycle. So can see % black. Consistently blue then yay.
+        Else black.
+        - TODO: Fix logging bug. I think UNKNOWN wil publish? Black also? then for what the if lol
+    d. deduplicate_singletons
+        - To merge blue tracks. Blind merge. Should be okay since there is only one.
+        - Should be okay even if blues go out of view since they are immortal. At best,
+        pose_history is pruned. Good enough as initial guesses post overfly. 
+        - When they do come back into view, will converge back to what is being seen/actual
+        current state. 
+        I do not expect there for dedup to happen if the blue is in view on account i.e.
+        detections and localization should not be that shit
+        - The blue invariant is needed to for the overall gate passage direction
+3. _cb_set_state/reset:
+    - Self-explanotory. Enable/Disable + Specify temporal window. Window is infinite
+    during overfly.
+    - Reset nukes everything. Even blues. 
+4. _cb_get_entry:
+    - Get blue entry. 
+5. _cb_get_exit:
+    - Get blue exit
+6. _cb_extract_goal
+    - Convert boat latlon.
+    - Determine general forward direction. a. Use blues. b. Use delta between previous
+    and current query (boat) pose. c. Use drone heading/yaw
+    - Greedy pairing of reds and greens. Up till max_gate_width. TODO: This one should
+    be accurately set.
+    - For singulars, draw line connecting boat and singular. If red, then project
+    perpendicularly to the right(?) since red buoy must be on right/starboard side.
+    - Project up till vehicle_encasing_radius. TODO: Should also check on value.
+    - Entry is never candidate. Idea is for BT side, just need to know what next/closest goal is.
+    - If exit, then do something else. Otherwise keep it movin'
+    - Only care about points that are ahead of boat, along general forward direction
+      and those that are not too near. TODO: Check waypoint_pass_tol
+    - Greedily grab nearest john. Convert to latlon. Ship that bad boy out.
+    - TODO: Maybe add debug publishing
+"""
