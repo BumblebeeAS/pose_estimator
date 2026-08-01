@@ -164,9 +164,7 @@ class TrackManager:
             return
 
         all_positions = np.array(point_list)
-        # Ensure min_samples does not exceed total points when initializing sparse scenes
-        min_samples = min(len(all_positions), self.dbscan_min_samples)
-        dbscan = DBSCAN(eps=self.max_association_radius, min_samples=min_samples)
+        dbscan = DBSCAN(eps=self.max_association_radius, min_samples=self.dbscan_min_samples)
         labels = dbscan.fit_predict(all_positions)
 
         for label in set(labels):
