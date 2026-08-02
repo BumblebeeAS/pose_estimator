@@ -113,3 +113,22 @@ RED_CIRCLE_RADII = {
     "small": 0.0508,
     "large": 0.0635,
 }
+
+# Safe Passage Buoy
+# Physical dimensions (m) from collision box: 0.45 x 0.45 x 0.3 (width x depth x height)
+# Top face of the buoy (0.45m x 0.45m).
+BUOY_OBJECT_POINTS = np.array(
+    [
+        [0.0, 0.0],
+        [0.0, 0.45],
+        [0.45, 0.45],
+        [0.45, 0.0],
+    ],
+    dtype=np.float32,
+)
+
+# Offset (m) from top-left corner to the center of the buoy's top face.
+BUOY_CENTER_OFFSET = np.array(
+    [0.45 / 2.0, 0.45 / 2.0, 0.0],
+    dtype=np.float32,
+)

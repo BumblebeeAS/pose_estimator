@@ -15,7 +15,7 @@ from pose_estimator.utils.detections import (
     match_polygon_points,
 )
 from pose_estimator.utils.pose_estimator import get_object_pose, refine_object_pose
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorNode
+from pose_estimator.utils.pose_estimator_node import PoseEstimatorPosePubNode
 from pose_estimator.utils.ros_messages import get_pose_stamped
 from rclpy.publisher import Publisher
 from rclpy.qos import qos_profile_sensor_data
@@ -23,31 +23,60 @@ from std_msgs.msg import Header
 from yolo_msgs.msg import DetectionArray
 
 COLOR_TO_UINT8 = {
-    "black": BuoyDetection.BLACK,
-    "red": BuoyDetection.RED,
-    "green": BuoyDetection.GREEN,
-    "blue": BuoyDetection.BLUE,
+    "black_buoy": BuoyDetection.BLACK,
+    "red_buoy": BuoyDetection.RED,
+    "green_buoy": BuoyDetection.GREEN,
+    "blue_buoy": BuoyDetection.BLUE,
 }
 CLASSES_OF_INTEREST = list(COLOR_TO_UINT8.keys())
 
 
-class BuoyPoseEstimatorNode(PoseEstimatorNode):
+class BuoyPoseEstimatorNode(PoseEstimatorPosePubNode):
     def __init__(self):
         super().__init__("buoy_pose_estimator_node")
 
+        output_pose_topic = (
+            self.declare_parameter("output_pose_topic", "/buoy_detections")
+            .get_parameter_value()
+            .string_value
+        )
+        debug_annotations_topic = (
+            self.declare_parameter("debug_annotations_topic", "debug_annotations")
+            .get_parameter_value()
+            .string_value
+        )
+
+        self._pose_publishers = {}
+        for class_name in CLASSES_OF_INTEREST:
+            self._pose_publishers[class_name] = self.create_publisher(
+                PoseStamped, f"{output_pose_topic}/{class_name}", qos_profile_sensor_data
+            )
+
         self.pose_publisher: Publisher[BuoyDetectionArray] = self.create_publisher(
-            BuoyDetectionArray, "/buoy_detections", qos_profile_sensor_data
+            BuoyDetectionArray, output_pose_topic, qos_profile_sensor_data
         )
         self.debug_annotations_publisher = self.create_publisher(
-            ImageAnnotations, "debug_annotations", qos_profile_sensor_data
+            ImageAnnotations, debug_annotations_topic, qos_profile_sensor_data
+        )
+
+        input_detections_topic = (
+            self.declare_parameter(
+                "input_detections_topic", rclpy.Parameter.Type.STRING
+            )
+            .get_parameter_value()
+            .string_value
         )
 
         self.detection_subscription = self.create_subscription(
             DetectionArray,
-            "/yolo/detections",
+            input_detections_topic,
             self.detection_callback,
             qos_profile_sensor_data,
         )
+
+    @property
+    def pose_publishers(self) -> dict[str, Publisher]:
+        return self._pose_publishers
 
     def _get_detection_poses_in_camera_frame(self, detections: DetectionArray):
         detection_stamp = detections.header.stamp
@@ -90,7 +119,7 @@ class BuoyPoseEstimatorNode(PoseEstimatorNode):
                 R, _ = cv2.Rodrigues(rvec)
                 tvec = tvec.flatten() + R @ BUOY_CENTER_OFFSET
 
-                output.append((detection.class_name, tvec))
+                output.append((detection.class_name, tvec, rvec, object_points))
                 detected_polygons.append(detected_points)
             except Exception as e:
                 self.get_logger().warn(f"Pose estimation failed: {e}")
@@ -114,7 +143,7 @@ class BuoyPoseEstimatorNode(PoseEstimatorNode):
         buoy_array_msg.header.stamp = msg.header.stamp
         buoy_array_msg.header.frame_id = msg.header.frame_id
 
-        for class_name, tvec in detection_poses:
+        for class_name, tvec, rvec, object_points in detection_poses:
             pose_header = Header()
             pose_header.stamp = detection_stamp
             pose_header.frame_id = msg.header.frame_id
@@ -126,6 +155,8 @@ class BuoyPoseEstimatorNode(PoseEstimatorNode):
             buoy_msg.pose = pose_stamped
             buoy_msg.color = COLOR_TO_UINT8.get(class_name, BuoyDetection.BLACK)
             buoy_array_msg.detections.append(buoy_msg)
+
+            self.publish_data(tvec, rvec, object_points, pose_header, class_name)
 
         self.pose_publisher.publish(buoy_array_msg)
 
