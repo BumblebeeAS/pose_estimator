@@ -677,10 +677,14 @@ class BuoyGateManagerNode(Node):
 
         now_sec = self.get_clock().now().nanoseconds / 1e9
         for d in msg.detections:
-            color_str = d.color.lower() if d.color else Color.BLACK.value
-            if color_str in CLASSES_OF_INTEREST and color_str != Color.BLACK.value:
+            color_str = MSG_COLOR_TO_STR.get(d.color, Color.BLACK.value)
+            if color_str in CLASSES_OF_INTEREST:
                 pos = np.array(
-                    [d.pose.position.x, d.pose.position.y, d.pose.position.z]
+                    [
+                        d.pose.pose.position.x,
+                        d.pose.pose.position.y,
+                        d.pose.pose.position.z,
+                    ]
                 )
                 pos_world = rot_matrix @ pos + trans_vec
                 pos_world[2] = 0.0  # Zero out Z in world frame (water surface)
