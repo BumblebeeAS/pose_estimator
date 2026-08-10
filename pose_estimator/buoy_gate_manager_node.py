@@ -21,6 +21,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from robot_localization.srv import FromLL, ToLL
 from scipy import signal
 from scipy.fft import rfft, rfftfreq
@@ -511,6 +512,7 @@ class BuoyGateManagerNode(Node):
         self.declare_parameter("max_gate_width", 1.0)
         self.declare_parameter("vehicle_encasing_radius", 0.8)
         self.declare_parameter("waypoint_pass_tol", 1.0)
+        self.declare_parameter("visualize_candidates", True)
 
         # Extract values
         self.buoy_detections_topic = self.get_parameter("buoy_detections_topic").value
@@ -533,6 +535,7 @@ class BuoyGateManagerNode(Node):
             "vehicle_encasing_radius"
         ).value
         self.waypoint_pass_tol = self.get_parameter("waypoint_pass_tol").value
+        self.visualize_candidates = self.get_parameter("visualize_candidates").value
 
         # Initialize TF2
         self.tf_buffer = tf2_ros.Buffer()
@@ -564,7 +567,7 @@ class BuoyGateManagerNode(Node):
             BuoyDetectionArray,
             self.buoy_detections_topic,
             self._on_buoy_detections,
-            10,
+            qos_profile_sensor_data,
             callback_group=self.main_cb_group,
         )
         self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
