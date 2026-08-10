@@ -2,6 +2,7 @@
 import math
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -9,7 +10,7 @@ import numpy as np
 import rclpy
 import tf2_ros
 import tf_transformations
-from bb_msgs.msg import BuoyDetectionArray
+from bb_robotx_msgs.msg import BuoyDetection, BuoyDetectionArray
 from bb_robotx_msgs.srv import (
     ExtractLocalGoal,
     GetEntry,
@@ -55,11 +56,59 @@ CLASSES_OF_INTEREST = [
     Color.BLACK.value,
 ]
 
+# BuoyDetection.color is a uint8 enum on the wire, the tracker works in colour strings.
+MSG_COLOR_TO_STR = {
+    BuoyDetection.BLACK: Color.BLACK.value,
+    BuoyDetection.RED: Color.RED.value,
+    BuoyDetection.GREEN: Color.GREEN.value,
+    BuoyDetection.BLUE: Color.BLUE.value,
+}
+
+GOAL_TYPE_GATE_PAIR = "GATE_PAIR"
+GOAL_TYPE_SINGULAR_BUOY = "SINGULAR_BUOY"
+GOAL_TYPE_EXIT_BUOY = "EXIT_BUOY"
+GOAL_TYPE_INVALID = "INVALID"
+
+# Visualisation palette. Treat these as immutable, they are shared across markers.
+TRACK_COLOR_MAP = {
+    DetectedBuoyColor.FLASHING_RED: ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8),
+    DetectedBuoyColor.FLASHING_GREEN: ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8),
+    DetectedBuoyColor.FLASHING_BLUE: ColorRGBA(r=0.0, g=0.5, b=1.0, a=0.9),
+    DetectedBuoyColor.SOLID_BLUE: ColorRGBA(r=0.0, g=0.0, b=1.0, a=0.9),
+    DetectedBuoyColor.UNKNOWN: ColorRGBA(r=0.5, g=0.5, b=0.5, a=0.5),
+}
+CANDIDATE_COLOR_MAP = {
+    GOAL_TYPE_GATE_PAIR: ColorRGBA(r=1.0, g=0.9, b=0.1, a=0.9),
+    GOAL_TYPE_SINGULAR_BUOY: ColorRGBA(r=1.0, g=0.5, b=0.0, a=0.9),
+    GOAL_TYPE_EXIT_BUOY: ColorRGBA(r=0.0, g=0.9, b=0.9, a=0.9),
+}
+REJECTED_CANDIDATE_COLOR = ColorRGBA(r=0.4, g=0.4, b=0.4, a=0.35)
+SELECTED_GOAL_COLOR = ColorRGBA(r=1.0, g=0.0, b=1.0, a=0.6)
+
 
 def _get_yaw_from_quaternion(q: Quaternion) -> float:
     siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
     cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
     return math.atan2(siny_cosp, cosy_cosp)
+
+
+@dataclass
+class GoalCandidate:
+    """A single stateless waypoint proposal derived from the current track set.
+
+    Produced by BuoyGateManagerNode._generate_candidates and annotated in place by
+    _filter_candidates. Shared verbatim by the extract-goal service and the marker
+    visualisation so both always describe the same candidate set.
+    """
+
+    goal_type: str
+    position: np.ndarray
+    track_ids: Tuple[int, ...] = field(default_factory=tuple)
+    distance: float = float("inf")
+    is_valid: bool = False
+    reject_reason: str = "UNEVALUATED"
+    # Helpful for tuning max_gate_width
+    gate_width: Optional[float] = None
 
 
 class BuoyTrack:
@@ -165,7 +214,9 @@ class TrackManager:
             return
 
         all_positions = np.array(point_list)
-        dbscan = DBSCAN(eps=self.max_association_radius, min_samples=self.dbscan_min_samples)
+        dbscan = DBSCAN(
+            eps=self.max_association_radius, min_samples=self.dbscan_min_samples
+        )
         labels = dbscan.fit_predict(all_positions)
 
         for label in set(labels):
@@ -479,8 +530,7 @@ class BuoyGateManagerNode(Node):
         self.main_cb_group = MutuallyExclusiveCallbackGroup()
         self.client_cb_group = MutuallyExclusiveCallbackGroup()
 
-        # Parameter declarations from Section 7 Table
-        self.declare_parameter("buoy_detections_topic", "/buoy_detections")
+        self.declare_parameter("buoy_detections_topic", "buoy_detections")
         self.declare_parameter("marker_topic", "gate_manager_markers")
         self.declare_parameter("from_ll_service", "/fromLL")
         self.declare_parameter("to_ll_service", "/toLL")
@@ -541,9 +591,12 @@ class BuoyGateManagerNode(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        # Lifecycle and tracking state
+        # Lifecycle and tracking state. The two most recent query positions are kept so
+        # the visualisation can reproduce the exact forward vector of the last service
+        # call, which needs the query before it for the trajectory heading tier.
         self.enable: bool = False
         self.last_query_pos: Optional[np.ndarray] = None
+        self.prev_query_pos: Optional[np.ndarray] = None
 
         self.track_manager = TrackManager(
             max_association_radius=self.get_parameter("max_association_radius").value,
@@ -562,7 +615,6 @@ class BuoyGateManagerNode(Node):
             logger=self.get_logger(),
         )
 
-        # Topic subscriptions & publishers
         self.detections_sub = self.create_subscription(
             BuoyDetectionArray,
             self.buoy_detections_topic,
@@ -741,6 +793,7 @@ class BuoyGateManagerNode(Node):
         """Layer 3: Trigger service to clear all tracks."""
         self.track_manager.clear_all_tracks()
         self.last_query_pos = None
+        self.prev_query_pos = None
         res.success = True
         res.message = "All tracks reset successfully."
         self.get_logger().info(res.message)
@@ -849,97 +902,74 @@ class BuoyGateManagerNode(Node):
         )
         return res
 
-    def _cb_extract_goal(
-        self, req: ExtractLocalGoal.Request, res: ExtractLocalGoal.Response
-    ) -> ExtractLocalGoal.Response:
-        """Layer 3: Instantaneous local goal extraction with TF2 frame normalization and geodetic bridge."""
-        vehicle_pos = None
-
-        if req.input_is_latlon:
-            vehicle_pos = self._convert_from_ll(req.current_latlon)
-            if vehicle_pos is None:
-                res.success = False
-                res.goal_type = "INVALID"
-                res.message = "Geodetic /fromLL conversion failed."
-                return res
-        else:
-            in_pose = req.current_pose
-            if (
-                in_pose.header.frame_id
-                and in_pose.header.frame_id != self.world_frame_id
-            ):
-                try:
-                    in_pose = self.tf_buffer.transform(
-                        in_pose, self.world_frame_id, timeout=Duration(seconds=1.0)
-                    )
-                except Exception as e:
-                    res.success = False
-                    res.goal_type = "INVALID"
-                    res.message = f"TF transform failed from '{in_pose.header.frame_id}' to '{self.world_frame_id}': {e}"
-                    return res
-            vehicle_pos = np.array(
-                [
-                    in_pose.pose.position.x,
-                    in_pose.pose.position.y,
-                    in_pose.pose.position.z,
-                ]
-            )
-
-        # Determine forward unit vector in world_frame_id (3-tier frame-intrinsic hierarchy)
-        v_forward = None
-
-        # Priority 1: Course axis vector from Entry to Exit buoys
+    def _get_milestone_centroids(
+        self,
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Return the (entry, exit) centroids, i.e. FLASHING_BLUE and SOLID_BLUE."""
         entry_pos, exit_pos = None, None
         for track in self.track_manager.tracks.values():
-            if (
-                track.published_state == DetectedBuoyColor.FLASHING_BLUE
-                and track.current_centroid is not None
-            ):
-                entry_pos = track.current_centroid[:2]
-            elif (
-                track.published_state == DetectedBuoyColor.SOLID_BLUE
-                and track.current_centroid is not None
-            ):
-                exit_pos = track.current_centroid[:2]
-        if (
-            entry_pos is not None
-            and exit_pos is not None
-            and np.linalg.norm(exit_pos - entry_pos) > 0.1
-        ):
-            diff = exit_pos - entry_pos
-            v_forward = diff / np.linalg.norm(diff)
+            if track.current_centroid is None:
+                continue
+            if track.published_state == DetectedBuoyColor.FLASHING_BLUE:
+                entry_pos = track.current_centroid
+            elif track.published_state == DetectedBuoyColor.SOLID_BLUE:
+                exit_pos = track.current_centroid
+        return entry_pos, exit_pos
 
-        # Priority 2: Vehicle (boat) trajectory motion vector
-        if v_forward is None and self.last_query_pos is not None:
-            if np.linalg.norm(vehicle_pos[:2] - self.last_query_pos[:2]) > 0.1:
-                diff = vehicle_pos[:2] - self.last_query_pos[:2]
-                v_forward = diff / np.linalg.norm(diff)
+    def _compute_forward_vector(
+        self, vehicle_pos: np.ndarray, previous_pos: Optional[np.ndarray]
+    ) -> Tuple[np.ndarray, str]:
+        """Forward unit vector in world_frame_id via the 3-tier frame-intrinsic hierarchy.
 
-        # Priority 3: Fall back to drone base_link heading in world_frame_id
-        if v_forward is None:
-            drone_yaw = 0.0
-            try:
-                base_transform = self.tf_buffer.lookup_transform(
-                    self.world_frame_id,
-                    self.base_link_frame_id,
-                    rclpy.time.Time(),
-                    rclpy.duration.Duration(seconds=0.1),
-                )
-                drone_yaw = _get_yaw_from_quaternion(base_transform.transform.rotation)
-            except Exception as e:
-                self.get_logger().warn(
-                    f"Failed to lookup drone heading from '{self.base_link_frame_id}': {e}",
-                    throttle_duration_sec=2.0,
-                )
-            v_forward = np.array([math.cos(drone_yaw), math.sin(drone_yaw)])
-            if np.linalg.norm(v_forward) == 0.0:
-                v_forward = np.array([1.0, 0.0])
-            else:
-                v_forward = v_forward / np.linalg.norm(v_forward)
+        Args:
+            vehicle_pos: Current vehicle position in world_frame_id.
+            previous_pos: Position of the preceding query, used for the trajectory tier.
+                Pass None to skip that tier.
 
-        self.last_query_pos = vehicle_pos.copy()
+        Returns:
+            The 2D forward unit vector and a tag naming the tier it came from.
+        """
+        # Priority 1: course axis vector from Entry to Exit buoys
+        entry_pos, exit_pos = self._get_milestone_centroids()
+        if entry_pos is not None and exit_pos is not None:
+            diff = exit_pos[:2] - entry_pos[:2]
+            if np.linalg.norm(diff) > 0.1:
+                return diff / np.linalg.norm(diff), "COURSE_AXIS"
 
-        # Stateless candidate generation
+        # Priority 2: vehicle (boat) trajectory motion vector between successive queries
+        if previous_pos is not None:
+            diff = vehicle_pos[:2] - previous_pos[:2]
+            if np.linalg.norm(diff) > 0.1:
+                return diff / np.linalg.norm(diff), "VEHICLE_TRAJECTORY"
+
+        # Priority 3: fall back to drone base_link heading in world_frame_id
+        drone_yaw = 0.0
+        try:
+            base_transform = self.tf_buffer.lookup_transform(
+                self.world_frame_id,
+                self.base_link_frame_id,
+                rclpy.time.Time(),
+                rclpy.duration.Duration(seconds=0.1),
+            )
+            drone_yaw = _get_yaw_from_quaternion(base_transform.transform.rotation)
+        except Exception as e:
+            self.get_logger().warn(
+                f"Failed to lookup drone heading from '{self.base_link_frame_id}': {e}",
+                throttle_duration_sec=2.0,
+            )
+        v_forward = np.array([math.cos(drone_yaw), math.sin(drone_yaw)])
+        norm = np.linalg.norm(v_forward)
+        if norm == 0.0:
+            return np.array([1.0, 0.0]), "DRONE_HEADING"
+        return v_forward / norm, "DRONE_HEADING"
+
+    def _generate_candidates(self, vehicle_pos: np.ndarray) -> List[GoalCandidate]:
+        """Stateless candidate generation from the current track set.
+
+        Greedily pairs red/green tracks into gates within max_gate_width, offsets any
+        unpaired buoy to the side the vehicle must keep it on, and appends the Exit
+        buoy. The Entry buoy is NEVER a candidate.
+        """
         red_tracks = [
             t
             for t in self.track_manager.tracks.values()
@@ -953,7 +983,7 @@ class BuoyGateManagerNode(Node):
             and t.current_centroid is not None
         ]
 
-        candidates: List[Tuple[str, np.ndarray]] = []
+        candidates: List[GoalCandidate] = []
         paired_red: Set[int] = set()
         paired_green: Set[int] = set()
 
@@ -973,7 +1003,14 @@ class BuoyGateManagerNode(Node):
                     self.track_manager.tracks[r_id].current_centroid
                     + self.track_manager.tracks[g_id].current_centroid
                 )
-                candidates.append(("GATE_PAIR", midpoint))
+                candidates.append(
+                    GoalCandidate(
+                        goal_type=GOAL_TYPE_GATE_PAIR,
+                        position=midpoint,
+                        track_ids=(r_id, g_id),
+                        gate_width=float(dist),
+                    )
+                )
 
         # Singular standoffs
         for rt in red_tracks:
@@ -990,7 +1027,13 @@ class BuoyGateManagerNode(Node):
                 standoff[1] += self.vehicle_encasing_radius * math.sin(
                     alpha + math.pi / 2.0
                 )
-                candidates.append(("SINGULAR_BUOY", standoff))
+                candidates.append(
+                    GoalCandidate(
+                        goal_type=GOAL_TYPE_SINGULAR_BUOY,
+                        position=standoff,
+                        track_ids=(rt.track_id,),
+                    )
+                )
 
         for gt in green_tracks:
             if gt.track_id not in paired_green:
@@ -1006,57 +1049,163 @@ class BuoyGateManagerNode(Node):
                 standoff[1] += self.vehicle_encasing_radius * math.sin(
                     alpha - math.pi / 2.0
                 )
-                candidates.append(("SINGULAR_BUOY", standoff))
+                candidates.append(
+                    GoalCandidate(
+                        goal_type=GOAL_TYPE_SINGULAR_BUOY,
+                        position=standoff,
+                        track_ids=(gt.track_id,),
+                    )
+                )
 
         # Include Exit buoy if available (Entry is NEVER included)
-        for t in self.track_manager.tracks.values():
+        for tid, t in self.track_manager.tracks.items():
             if (
                 t.published_state == DetectedBuoyColor.SOLID_BLUE
                 and t.current_centroid is not None
             ):
-                candidates.append(("EXIT_BUOY", t.current_centroid))
+                candidates.append(
+                    GoalCandidate(
+                        goal_type=GOAL_TYPE_EXIT_BUOY,
+                        position=t.current_centroid,
+                        track_ids=(tid,),
+                    )
+                )
 
-        # Stateless In-Front filtering & traversal check
-        valid_candidates: List[Tuple[str, np.ndarray, float]] = []
-        for c_type, c_pos in candidates:
-            dist_to_cand = np.linalg.norm(c_pos[:2] - vehicle_pos[:2])
-            d_vec = c_pos[:2] - vehicle_pos[:2]
-            dot_val = np.dot(d_vec, v_forward)
+        return candidates
 
-            # Ignore waypoints that are behind the vehicle or within reaching tolerance
-            if dist_to_cand < self.waypoint_pass_tol or dot_val <= 0:
-                continue
+    def _filter_candidates(
+        self,
+        candidates: List[GoalCandidate],
+        vehicle_pos: np.ndarray,
+        v_forward: np.ndarray,
+    ) -> None:
+        """Annotate each candidate in place with its distance and validity.
 
-            valid_candidates.append((c_type, c_pos, dist_to_cand))
+        A candidate is rejected when it sits behind the vehicle along v_forward or is
+        already within waypoint_pass_tol, i.e. effectively reached.
+        """
+        for cand in candidates:
+            d_vec = cand.position[:2] - vehicle_pos[:2]
+            cand.distance = float(np.linalg.norm(d_vec))
+            if cand.distance < self.waypoint_pass_tol:
+                cand.is_valid = False
+                cand.reject_reason = "WITHIN_PASS_TOL"
+            elif np.dot(d_vec, v_forward) <= 0.0:
+                cand.is_valid = False
+                cand.reject_reason = "BEHIND_VEHICLE"
+            else:
+                cand.is_valid = True
+                cand.reject_reason = ""
 
-        if not valid_candidates:
+    def _evaluate_candidates(
+        self, vehicle_pos: np.ndarray, previous_pos: Optional[np.ndarray]
+    ) -> Tuple[np.ndarray, str, List[GoalCandidate]]:
+        """Single entry point for goal reasoning, shared by the service and markers.
+
+        Both _cb_extract_goal and the marker visualisation go through here so they can
+        never disagree about which candidates exist or which one wins.
+
+        Returns:
+            The forward unit vector, the tier tag it came from, and every candidate
+            sorted valid-first then nearest-first.
+        """
+        v_forward, forward_source = self._compute_forward_vector(
+            vehicle_pos, previous_pos
+        )
+        candidates = self._generate_candidates(vehicle_pos)
+        self._filter_candidates(candidates, vehicle_pos, v_forward)
+        candidates.sort(key=lambda c: (not c.is_valid, c.distance))
+        return v_forward, forward_source, candidates
+
+    @staticmethod
+    def _select_best_candidate(
+        candidates: List[GoalCandidate],
+    ) -> Optional[GoalCandidate]:
+        """Distance gating: the nearest valid candidate, or None if there is none."""
+        for cand in candidates:
+            if cand.is_valid:
+                return cand
+        return None
+
+    def _cb_extract_goal(
+        self, req: ExtractLocalGoal.Request, res: ExtractLocalGoal.Response
+    ) -> ExtractLocalGoal.Response:
+        """Layer 3: Instantaneous local goal extraction with TF2 frame normalization and geodetic bridge."""
+        vehicle_pos = None
+
+        if req.input_is_latlon:
+            vehicle_pos = self._convert_from_ll(req.current_latlon)
+            if vehicle_pos is None:
+                res.success = False
+                res.goal_type = GOAL_TYPE_INVALID
+                res.message = "Geodetic /fromLL conversion failed."
+                return res
+        else:
+            in_pose = req.current_pose
+            if (
+                in_pose.header.frame_id
+                and in_pose.header.frame_id != self.world_frame_id
+            ):
+                try:
+                    in_pose = self.tf_buffer.transform(
+                        in_pose, self.world_frame_id, timeout=Duration(seconds=1.0)
+                    )
+                except Exception as e:
+                    res.success = False
+                    res.goal_type = GOAL_TYPE_INVALID
+                    res.message = f"TF transform failed from '{in_pose.header.frame_id}' to '{self.world_frame_id}': {e}"
+                    return res
+            vehicle_pos = np.array(
+                [
+                    in_pose.pose.position.x,
+                    in_pose.pose.position.y,
+                    in_pose.pose.position.z,
+                ]
+            )
+
+        # Forward heading, candidate generation and in-front filtering all happen inside
+        # _evaluate_candidates, which the marker visualisation calls with the same
+        # arguments so RViz always shows exactly what this service reasoned over.
+        _, forward_source, candidates = self._evaluate_candidates(
+            vehicle_pos, self.last_query_pos
+        )
+
+        # Roll the query history forward only after evaluating: the trajectory heading
+        # tier above needs the position of the preceding query, not this one.
+        self.prev_query_pos = self.last_query_pos
+        self.last_query_pos = vehicle_pos.copy()
+
+        best = self._select_best_candidate(candidates)
+        if best is None:
             res.success = False
-            res.goal_type = "INVALID"
-            res.message = "No valid forward waypoints found."
+            res.goal_type = GOAL_TYPE_INVALID
+            res.message = (
+                f"No valid forward waypoints found among {len(candidates)} candidate(s) "
+                f"(heading source {forward_source})."
+            )
             self.get_logger().info(
                 f"[_cb_extract_goal] {res.message}", throttle_duration_sec=2.0
             )
             return res
 
-        # Distance Gating: minimum distance
-        valid_candidates.sort(key=lambda x: x[2])
-        best_type, best_pos, best_dist = valid_candidates[0]
-
         res.success = True
-        res.goal_type = best_type
-        res.message = f"Selected {best_type} goal at distance {best_dist:.2f}m."
+        res.goal_type = best.goal_type
+        res.message = (
+            f"Selected {best.goal_type} goal at distance {best.distance:.2f}m "
+            f"(heading source {forward_source})."
+        )
 
         goal_pose = PoseStamped()
         goal_pose.header.stamp = self.get_clock().now().to_msg()
         goal_pose.header.frame_id = self.world_frame_id
-        goal_pose.pose.position.x = float(best_pos[0])
-        goal_pose.pose.position.y = float(best_pos[1])
-        goal_pose.pose.position.z = float(best_pos[2])
+        goal_pose.pose.position.x = float(best.position[0])
+        goal_pose.pose.position.y = float(best.position[1])
+        goal_pose.pose.position.z = float(best.position[2])
         goal_pose.pose.orientation.w = 1.0
         res.goal_pose = goal_pose
 
         if req.return_latlon:
-            ll = self._convert_to_ll(best_pos)
+            ll = self._convert_to_ll(best.position)
             if ll:
                 res.goal_latlon = ll
 
@@ -1065,8 +1214,193 @@ class BuoyGateManagerNode(Node):
         )
         return res
 
+    def _new_marker(self, ns: str, marker_id: int, marker_type: int, stamp) -> Marker:
+        """Build an ADD marker in world_frame_id with an identity pose."""
+        marker = Marker()
+        marker.header.frame_id = self.world_frame_id
+        marker.header.stamp = stamp
+        marker.ns = ns
+        marker.id = marker_id
+        marker.type = marker_type
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        return marker
+
+    def _get_visualisation_query_pos(
+        self,
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], str]:
+        """Reference position the candidate visualisation is generated from.
+
+        Prefers the vehicle position of the most recent extract-goal call, together
+        with the one before it, so the markers reproduce that call's reasoning exactly.
+        Before any call has arrived, falls back to the drone's own position so the
+        candidate set is still observable during overfly.
+
+        Returns:
+            The query position, the preceding query position (None when unavailable),
+            and a tag naming which source was used.
+        """
+        if self.last_query_pos is not None:
+            return self.last_query_pos, self.prev_query_pos, "LAST_QUERY"
+
+        try:
+            base_transform = self.tf_buffer.lookup_transform(
+                self.world_frame_id,
+                self.base_link_frame_id,
+                rclpy.time.Time(),
+                rclpy.duration.Duration(seconds=0.1),
+            )
+        except Exception as e:
+            self.get_logger().warn(
+                f"No query pose for candidate visualisation, and TF lookup of "
+                f"'{self.base_link_frame_id}' failed: {e}",
+                throttle_duration_sec=5.0,
+            )
+            return None, None, ""
+
+        t = base_transform.transform.translation
+        return np.array([t.x, t.y, t.z]), None, "DRONE_TF"
+
+    def _append_candidate_markers(self, marker_array: MarkerArray, now_msg) -> None:
+        """Visualise the goal candidates exactly as the extract-goal service sees them.
+
+        Runs the shared _evaluate_candidates pipeline, so anything drawn here is what
+        a service call made from the same query position would reason over: rejected
+        candidates are dimmed and labelled with why, and the winner is highlighted.
+        """
+        query_pos, previous_pos, query_source = self._get_visualisation_query_pos()
+        if query_pos is None:
+            return
+
+        v_forward, forward_source, candidates = self._evaluate_candidates(
+            query_pos, previous_pos
+        )
+        best = self._select_best_candidate(candidates)
+
+        # Query reference position the candidates were generated from
+        m_query = self._new_marker("gate_query", 0, Marker.SPHERE, now_msg)
+        m_query.pose.position = Point(
+            x=float(query_pos[0]), y=float(query_pos[1]), z=float(query_pos[2])
+        )
+        m_query.scale = Vector3(x=0.4, y=0.4, z=0.4)
+        m_query.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=0.7)
+        marker_array.markers.append(m_query)
+
+        # Forward heading used for the in-front filtering
+        m_forward = self._new_marker("gate_forward", 0, Marker.ARROW, now_msg)
+        m_forward.points = [
+            Point(x=float(query_pos[0]), y=float(query_pos[1]), z=float(query_pos[2])),
+            Point(
+                x=float(query_pos[0] + 2.0 * v_forward[0]),
+                y=float(query_pos[1] + 2.0 * v_forward[1]),
+                z=float(query_pos[2]),
+            ),
+        ]
+        m_forward.scale = Vector3(x=0.1, y=0.2, z=0.2)
+        m_forward.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=0.9)
+        marker_array.markers.append(m_forward)
+
+        m_source = self._new_marker(
+            "gate_forward_label", 0, Marker.TEXT_VIEW_FACING, now_msg
+        )
+        m_source.pose.position = Point(
+            x=float(query_pos[0]), y=float(query_pos[1]), z=float(query_pos[2]) + 1.2
+        )
+        m_source.scale.z = 0.35
+        m_source.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
+        m_source.text = f"query: {query_source}\nheading: {forward_source}"
+        marker_array.markers.append(m_source)
+
+        for idx, cand in enumerate(candidates):
+            color = (
+                CANDIDATE_COLOR_MAP[cand.goal_type]
+                if cand.is_valid
+                else REJECTED_CANDIDATE_COLOR
+            )
+
+            m_cand = self._new_marker("gate_candidates", idx, Marker.CYLINDER, now_msg)
+            m_cand.pose.position = Point(
+                x=float(cand.position[0]),
+                y=float(cand.position[1]),
+                z=float(cand.position[2]),
+            )
+            m_cand.scale = Vector3(x=0.5, y=0.5, z=0.15)
+            m_cand.color = color
+            marker_array.markers.append(m_cand)
+
+            m_label = self._new_marker(
+                "gate_candidate_labels", idx, Marker.TEXT_VIEW_FACING, now_msg
+            )
+            m_label.pose.position = Point(
+                x=float(cand.position[0]),
+                y=float(cand.position[1]),
+                z=float(cand.position[2]) + 0.4,
+            )
+            m_label.scale.z = 0.3
+            m_label.color = color
+            reject_suffix = "" if cand.is_valid else f"\n{cand.reject_reason}"
+            width_suffix = (
+                "" if cand.gate_width is None else f" | gate {cand.gate_width:.2f}m"
+            )
+            m_label.text = (
+                f"{cand.goal_type} {cand.distance:.1f}m"
+                f"{width_suffix}"
+                f"{reject_suffix}"
+                f"\ntracks: {', '.join(str(t) for t in cand.track_ids)}"
+            )
+            marker_array.markers.append(m_label)
+
+            # Draw the gate a paired candidate came from, so the midpoint is readable
+            if cand.goal_type == GOAL_TYPE_GATE_PAIR and len(cand.track_ids) == 2:
+                endpoints = [
+                    self.track_manager.tracks[tid].current_centroid
+                    for tid in cand.track_ids
+                    if tid in self.track_manager.tracks
+                    and self.track_manager.tracks[tid].current_centroid is not None
+                ]
+                if len(endpoints) == 2:
+                    m_link = self._new_marker(
+                        "gate_pair_links", idx, Marker.LINE_LIST, now_msg
+                    )
+                    m_link.points = [
+                        Point(x=float(p[0]), y=float(p[1]), z=float(p[2]))
+                        for p in endpoints
+                    ]
+                    m_link.scale.x = 0.08
+                    m_link.color = color
+                    marker_array.markers.append(m_link)
+
+            # Line from the query position to each candidate it is being compared against
+            m_ray = self._new_marker(
+                "gate_candidate_rays", idx, Marker.LINE_LIST, now_msg
+            )
+            m_ray.points = [
+                Point(
+                    x=float(query_pos[0]), y=float(query_pos[1]), z=float(query_pos[2])
+                ),
+                Point(
+                    x=float(cand.position[0]),
+                    y=float(cand.position[1]),
+                    z=float(cand.position[2]),
+                ),
+            ]
+            m_ray.scale.x = 0.03
+            m_ray.color = ColorRGBA(r=color.r, g=color.g, b=color.b, a=0.35)
+            marker_array.markers.append(m_ray)
+
+        if best is not None:
+            m_best = self._new_marker("gate_selected_goal", 0, Marker.SPHERE, now_msg)
+            m_best.pose.position = Point(
+                x=float(best.position[0]),
+                y=float(best.position[1]),
+                z=float(best.position[2]),
+            )
+            m_best.scale = Vector3(x=0.9, y=0.9, z=0.9)
+            m_best.color = SELECTED_GOAL_COLOR
+            marker_array.markers.append(m_best)
+
     def _publish_markers(self):
-        """Publish RViz visualization markers for tracks, IDs, and waypoints."""
+        """Publish RViz visualization markers for tracks, IDs, and goal candidates."""
         marker_array = MarkerArray()
         now_msg = self.get_clock().now().to_msg()
 
@@ -1075,52 +1409,37 @@ class BuoyGateManagerNode(Node):
         delete_marker.action = Marker.DELETEALL
         marker_array.markers.append(delete_marker)
 
-        color_map = {
-            DetectedBuoyColor.FLASHING_RED: ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.8),
-            DetectedBuoyColor.FLASHING_GREEN: ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.8),
-            DetectedBuoyColor.FLASHING_BLUE: ColorRGBA(r=0.0, g=0.5, b=1.0, a=0.9),
-            DetectedBuoyColor.SOLID_BLUE: ColorRGBA(r=0.0, g=0.0, b=1.0, a=0.9),
-            DetectedBuoyColor.UNKNOWN: ColorRGBA(r=0.5, g=0.5, b=0.5, a=0.5),
-        }
-
         for tid, track in self.track_manager.tracks.items():
             if track.current_centroid is None:
                 continue
 
-            # Sphere marker
-            m_sphere = Marker()
-            m_sphere.header.frame_id = self.world_frame_id
-            m_sphere.header.stamp = now_msg
-            m_sphere.ns = "buoy_tracks"
-            m_sphere.id = tid * 2
-            m_sphere.type = Marker.SPHERE
-            m_sphere.action = Marker.ADD
-            m_sphere.pose.position.x = float(track.current_centroid[0])
-            m_sphere.pose.position.y = float(track.current_centroid[1])
-            m_sphere.pose.position.z = float(track.current_centroid[2])
-            m_sphere.pose.orientation.w = 1.0
+            m_sphere = self._new_marker("buoy_tracks", tid, Marker.SPHERE, now_msg)
+            m_sphere.pose.position = Point(
+                x=float(track.current_centroid[0]),
+                y=float(track.current_centroid[1]),
+                z=float(track.current_centroid[2]),
+            )
             m_sphere.scale = Vector3(x=0.6, y=0.6, z=0.6)
-            m_sphere.color = color_map.get(
-                track.published_state, color_map[DetectedBuoyColor.UNKNOWN]
+            m_sphere.color = TRACK_COLOR_MAP.get(
+                track.published_state, TRACK_COLOR_MAP[DetectedBuoyColor.UNKNOWN]
             )
             marker_array.markers.append(m_sphere)
 
-            # Text label marker
-            m_text = Marker()
-            m_text.header.frame_id = self.world_frame_id
-            m_text.header.stamp = now_msg
-            m_text.ns = "buoy_labels"
-            m_text.id = tid * 2 + 1
-            m_text.type = Marker.TEXT_VIEW_FACING
-            m_text.action = Marker.ADD
-            m_text.pose.position.x = float(track.current_centroid[0])
-            m_text.pose.position.y = float(track.current_centroid[1])
-            m_text.pose.position.z = float(track.current_centroid[2]) + 0.8
-            m_text.pose.orientation.w = 1.0
+            m_text = self._new_marker(
+                "buoy_labels", tid, Marker.TEXT_VIEW_FACING, now_msg
+            )
+            m_text.pose.position = Point(
+                x=float(track.current_centroid[0]),
+                y=float(track.current_centroid[1]),
+                z=float(track.current_centroid[2]) + 0.8,
+            )
             m_text.scale.z = 0.4
             m_text.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
             m_text.text = f"ID: {tid}\n{track.published_state.name}"
             marker_array.markers.append(m_text)
+
+        if self.visualize_candidates:
+            self._append_candidate_markers(marker_array, now_msg)
 
         self.marker_pub.publish(marker_array)
 
@@ -1214,17 +1533,40 @@ Description of General Behaviours: ANDY WRITE ONE
     - Get blue exit
 6. _cb_extract_goal
     - Convert boat latlon.
-    - Determine general forward direction. a. Use blues. b. Use delta between previous
-    and current query (boat) pose. c. Use drone heading/yaw
-    - Greedy pairing of reds and greens. Up till max_gate_width. TODO: This one should
-    be accurately set.
-    - For singulars, draw line connecting boat and singular. If red, then project
-    perpendicularly to the right(?) since red buoy must be on right/starboard side.
-    - Project up till vehicle_encasing_radius. TODO: Should also check on value.
-    - Entry is never candidate. Idea is for BT side, just need to know what next/closest goal is.
-    - If exit, then do something else. Otherwise keep it movin'
-    - Only care about points that are ahead of boat, along general forward direction
-      and those that are not too near. TODO: Check waypoint_pass_tol
-    - Greedily grab nearest john. Convert to latlon. Ship that bad boy out.
-    - TODO: Maybe add debug publishing
+    - Everything from the forward direction down to the winning waypoint now lives in
+    _evaluate_candidates, which _publish_markers also calls. The service and RViz can
+    therefore never disagree about the candidate set. The service only adds the parts
+    that are genuinely its own: latlon conversion, rolling last/prev_query_pos forward,
+    and filling the response.
+    a. _compute_forward_vector
+        - Determine general forward direction. a. Use blues. b. Use delta between previous
+        and current query (boat) pose. c. Use drone heading/yaw
+        - Returns a tag naming the tier that won, which lands in the response message
+        and on the gate_forward_label marker.
+    b. _generate_candidates
+        - Greedy pairing of reds and greens. Up till max_gate_width. TODO: This one should
+        be accurately set.
+        - For singulars, draw line connecting boat and singular. If red, then project
+        perpendicularly to the right(?) since red buoy must be on right/starboard side.
+        - Project up till vehicle_encasing_radius. TODO: Should also check on value.
+        - Entry is never candidate. Idea is for BT side, just need to know what next/closest goal is.
+        - Each candidate remembers the track ids it came from so the markers can draw
+        the gate it was derived from.
+    c. _filter_candidates
+        - Only care about points that are ahead of boat, along general forward direction
+        and those that are not too near. TODO: Check waypoint_pass_tol
+        - Rejected candidates are kept and tagged (WITHIN_PASS_TOL / BEHIND_VEHICLE)
+        rather than dropped, so the visualisation can show why one was passed over.
+    d. _select_best_candidate
+        - Greedily grab nearest john. Convert to latlon. Ship that bad boy out.
+7. _publish_markers
+    - Track spheres + ID/state labels, as before.
+    - Plus the candidate overlay from _append_candidate_markers, drawn from the same
+    _evaluate_candidates call the service uses. Namespaces: gate_query (reference pose),
+    gate_forward (+_label) (heading arrow and which tier produced it), gate_candidates
+    (+_labels) (every candidate, dimmed grey when rejected), gate_pair_links (the red/green
+    gate behind a GATE_PAIR midpoint), gate_candidate_rays (query -> candidate), and
+    gate_selected_goal (the winner).
+    - The reference pose is the last extract_goal query when one has arrived, else the
+    drone's own TF pose so candidates are still visible during overfly.
 """
