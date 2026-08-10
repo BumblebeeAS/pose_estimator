@@ -142,8 +142,8 @@ class TrackManager:
         required_density: float = 0.8,
         butterworth_cutoff_freq: float = 2.5,
         butterworth_order: int = 4,
-        target_freq_min: float = 0.8,
-        target_freq_max: float = 1.2,
+        target_freq: float = 1.0,
+        target_freq_tol: float = 0.2,
         duty_cycle_min: float = 0.1,
         duty_cycle_max: float = 0.85,
         consistent_threshold: float = 0.6,
@@ -158,8 +158,8 @@ class TrackManager:
         self.required_density = required_density
         self.butterworth_cutoff_freq = butterworth_cutoff_freq
         self.butterworth_order = butterworth_order
-        self.target_freq_min = target_freq_min
-        self.target_freq_max = target_freq_max
+        self.target_freq = target_freq
+        self.target_freq_tol = target_freq_tol
         self.duty_cycle_min = duty_cycle_min
         self.duty_cycle_max = duty_cycle_max
         self.consistent_threshold = consistent_threshold
@@ -398,14 +398,9 @@ class TrackManager:
             # Score the target band by its total energy rather than by one peak bin.
             # A flash whose frequency falls between two bins splits its energy and becomes lesser
             # Accumulate over the band instead
-            bin_width = (
-                frequency_bins[1] - frequency_bins[0]
-                if len(frequency_bins) > 1
-                else 0.0
-            )
-            band_mask = (frequency_bins >= self.target_freq_min - bin_width) & (
-                frequency_bins <= self.target_freq_max + bin_width
-            )
+            bin_width = frequency_bins[1] - frequency_bins[0]
+            half_width = max(self.target_freq_tol, 1.0 * bin_width) + 0.5 * bin_width
+            band_mask = np.abs(frequency_bins - self.target_freq) <= half_width
 
             red_peak_power = self._band_power(fft_red_magnitude, band_mask)
             green_peak_power = self._band_power(fft_green_magnitude, band_mask)
@@ -569,8 +564,8 @@ class BuoyGateManagerNode(Node):
 
         self.declare_parameter("butterworth_cutoff_freq", 3.0)
         self.declare_parameter("butterworth_order", 4)
-        self.declare_parameter("target_freq_min", 0.8)
-        self.declare_parameter("target_freq_max", 1.2)
+        self.declare_parameter("target_freq", 1.0)
+        self.declare_parameter("target_freq_tol", 0.2)
         self.declare_parameter("duty_cycle_min", 0.1)
         self.declare_parameter("duty_cycle_max", 0.85)
         self.declare_parameter("consistent_threshold", 0.6)
@@ -622,8 +617,8 @@ class BuoyGateManagerNode(Node):
             required_density=self.get_parameter("required_density").value,
             butterworth_cutoff_freq=self.get_parameter("butterworth_cutoff_freq").value,
             butterworth_order=self.get_parameter("butterworth_order").value,
-            target_freq_min=self.get_parameter("target_freq_min").value,
-            target_freq_max=self.get_parameter("target_freq_max").value,
+            target_freq=self.get_parameter("target_freq").value,
+            target_freq_tol=self.get_parameter("target_freq_tol").value,
             duty_cycle_min=self.get_parameter("duty_cycle_min").value,
             duty_cycle_max=self.get_parameter("duty_cycle_max").value,
             consistent_threshold=self.get_parameter("consistent_threshold").value,
