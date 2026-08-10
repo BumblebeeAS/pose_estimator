@@ -177,9 +177,8 @@ class TrackManager:
 
     @property
     def required_detections(self) -> int:
-        return int(
-            self.temporal_window * self.virtual_sampling_rate * self.required_density
-        )
+        # TODO: Parametize
+        return int(5.0 * self.virtual_sampling_rate * self.required_density)
 
     def clear_all_tracks(self):
         self.tracks.clear()
