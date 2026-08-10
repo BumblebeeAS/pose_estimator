@@ -322,6 +322,16 @@ class TrackManager:
                 throttle_duration_sec=2.0,
             )
 
+    @staticmethod
+    def _band_power(magnitudes: np.ndarray, band_mask: np.ndarray) -> float:
+        """Total magnitude held inside the target frequency band.
+
+        Root of the summed squared bins, i.e. an energy measure. Unlike a single peak
+        bin this is invariant to where the flash frequency falls relative to the FFT
+        bin centres, so it reads the same for a flasher anywhere in the band.
+        """
+        return float(np.sqrt(np.square(magnitudes[band_mask]).sum()))
+
     def classify_tracks(self):
         """
         Layer 2 Background Classification: Rigorous time-resampling (np.interp), Butterworth low-pass filter,
@@ -331,6 +341,9 @@ class TrackManager:
             if len(track.pose_history) < max(
                 self.min_filter_samples, self.required_detections
             ):
+                self.logger.warn(
+                    f"Insufficient detections at {len(track.pose_history)} for {track.track_id}",
+                )
                 continue
 
             raw_timestamps = np.array([t for t, _ in track.pose_history])
@@ -382,28 +395,29 @@ class TrackManager:
             if len(frequency_bins) <= 1:
                 continue
 
+            # Score the target band by its total energy rather than by one peak bin.
+            # A flash whose frequency falls between two bins splits its energy and becomes lesser
+            # Accumulate over the band instead
+            bin_width = (
+                frequency_bins[1] - frequency_bins[0]
+                if len(frequency_bins) > 1
+                else 0.0
+            )
+            band_mask = (frequency_bins >= self.target_freq_min - bin_width) & (
+                frequency_bins <= self.target_freq_max + bin_width
+            )
+
+            red_peak_power = self._band_power(fft_red_magnitude, band_mask)
+            green_peak_power = self._band_power(fft_green_magnitude, band_mask)
+            blue_peak_power = self._band_power(fft_blue_magnitude, band_mask)
+
+            # Peak bins are retained for logging only, they no longer gate anything.
             red_max_idx = np.argmax(fft_red_magnitude[1:]) + 1
-            red_peak_freq = frequency_bins[red_max_idx]
-            red_peak_power = (
-                fft_red_magnitude[red_max_idx]
-                if self.target_freq_min <= red_peak_freq <= self.target_freq_max
-                else -1.0
-            )
-
             green_max_idx = np.argmax(fft_green_magnitude[1:]) + 1
-            green_peak_freq = frequency_bins[green_max_idx]
-            green_peak_power = (
-                fft_green_magnitude[green_max_idx]
-                if self.target_freq_min <= green_peak_freq <= self.target_freq_max
-                else -1.0
-            )
-
             blue_max_idx = np.argmax(fft_blue_magnitude[1:]) + 1
-            blue_peak_freq = frequency_bins[blue_max_idx]
-            blue_peak_power = (
-                fft_blue_magnitude[blue_max_idx]
-                if self.target_freq_min <= blue_peak_freq <= self.target_freq_max
-                else -1.0
+
+            self.logger.info(
+                f"[classify_tracks] red peak freq {frequency_bins[red_max_idx]}, green peak {frequency_bins[green_max_idx]}, blue peak {frequency_bins[blue_max_idx]} for {track.track_id}"
             )
 
             blue_presence = fft_blue_magnitude[0]
@@ -420,6 +434,9 @@ class TrackManager:
             )
 
             best_color, peak_power, dc_presence = dominant_flashing_color
+            self.logger.info(
+                f"[classify_tracks] {best_color}, {peak_power}, {dc_presence} for {track.track_id}",
+            )
 
             # Verify that the light is not on more than duty_cycle_max or less than duty_cycle_min for it to be flashing
             is_valid_duty_cycle = (
