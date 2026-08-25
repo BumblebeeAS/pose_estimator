@@ -11,6 +11,13 @@ HELIPAD_RADII = {
 }
 
 WINDOW_OBJECT_POINTS_DICT = {
-    "left_window": [(0.0, 0.0), (0.21, 0.0), (0.21, 0.21), (0.0, 0.21)],
-    "right_window": [(0.0, 0.0), (0.21, 0.0), (0.21, 0.21), (0.0, 0.21)],
+    "red_window": [(0.0, 0.0), (0.0, 0.29), (0.21, 0.29), (0.21, 0.0)],
+    "green_window": [(0.0, 0.0), (0.0, 0.29), (0.21, 0.29), (0.21, 0.0)],
+    "blue_window": [(0.0, 0.0), (0.0, 0.29), (0.21, 0.29), (0.21, 0.0)],
+}
+
+WINDOW_FRAME_REMAP = {
+    "red_window": "dockwin/red",
+    "green_window": "dockwin/green",
+    "blue_window": "dockwin/blue",
 }
