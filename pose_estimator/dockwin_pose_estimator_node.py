@@ -5,7 +5,7 @@ import message_filters
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from yolo_msgs.msg import Detection, DetectionArray
@@ -27,7 +27,10 @@ from pose_estimator.utils.pose_estimator import (
     get_object_pose_from_detection_using_best_fit_quad,
     refine_object_pose,
 )
-from pose_estimator.utils.pose_estimator_node import PoseEstimatorPosePubNode
+from pose_estimator.utils.pose_estimator_node import (
+    PoseEstimatorPosePubNode,
+    get_translation_quaternion,
+)
 
 
 def _polygon_to_binary_mask(
@@ -249,6 +252,33 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
             )
             self.publish_data(tvec, rvec, object_points, msg.header, frame_name)
 
+    def publish_data(
+        self,
+        tvec: np.ndarray,
+        rvec: np.ndarray,
+        object_points: np.ndarray,
+        header,
+        object_frame_id: str,
+    ) -> None:
+        try:
+            t, q = get_translation_quaternion(tvec, rvec)
+        except np.linalg.LinAlgError as e:
+            self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
+            return
+        except Exception as e:
+            self.get_logger().warn(f"Rodrigues conversion failed: {e}")
+            return
+
+        pose = PoseStamped()
+        pose.header = header
+        pose.pose.position = Point(
+            x=float(t[0]), y=float(t[1]), z=float(t[2])
+        )
+        pose.pose.orientation = Quaternion(
+            x=float(q[0]), y=float(q[1]), z=float(q[2]), w=float(q[3])
+        )
+        self.pose_publishers[object_frame_id].publish(pose)
+
     def _extract_mask_depth(
         self, depth_img: np.ndarray, detection: Detection
     ) -> float:
@@ -309,15 +339,15 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         """Refine translation vector using measured stereo depth."""
         pnp_depth = float(tvec[2, 0])
         if pnp_depth > 1e-4:
-            scale = measured_depth / pnp_depth
-            refined_tvec = (tvec * scale).astype(np.float32)
-            refined_tvec[2, 0] = np.float32(measured_depth)
+            scale = float(measured_depth) / pnp_depth
+            refined_tvec = (tvec * scale).astype(np.float64)
+            refined_tvec[2, 0] = float(measured_depth)
             return refined_tvec
         else:
             centroid_pos = get_detection_centroid_position(
-                detection, self.camera, measured_depth
+                detection, self.camera, float(measured_depth)
             )
-            return centroid_pos.reshape((3, 1)).astype(np.float32)
+            return centroid_pos.reshape((3, 1)).astype(np.float64)
 
     def _estimate_with_oriented_quad(self, class_name, detection):
         object_points_2d = self.object_points[class_name]
