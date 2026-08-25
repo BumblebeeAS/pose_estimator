@@ -1,9 +1,14 @@
+from typing import Optional
+
 import cv2
+import message_filters
 import numpy as np
 import rclpy
+from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
 from rclpy.qos import qos_profile_sensor_data
-from yolo_msgs.msg import DetectionArray
+from sensor_msgs.msg import Image
+from yolo_msgs.msg import Detection, DetectionArray
 
 from pose_estimator.config.robotx26_object_points import (
     WINDOW_FRAME_REMAP,
@@ -13,9 +18,11 @@ from pose_estimator.utils.detections import (
     filter_detections_by_num_points,
     get_best_detections_per_class,
     get_detection_obb,
+    get_detection_polygon,
     match_polygon_points,
 )
 from pose_estimator.utils.pose_estimator import (
+    get_detection_centroid_position,
     get_object_pose,
     get_object_pose_from_detection_using_best_fit_quad,
     refine_object_pose,
@@ -23,13 +30,30 @@ from pose_estimator.utils.pose_estimator import (
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorPosePubNode
 
 
+def _polygon_to_binary_mask(
+    polygon: np.ndarray, resolution_wh: tuple[int, int]
+) -> np.ndarray:
+    """Create a binary uint8 mask (0 or 255) from polygon coordinate points."""
+    w, h = int(resolution_wh[0]), int(resolution_wh[1])
+    mask = np.zeros((h, w), dtype=np.uint8)
+    poly = np.asarray(polygon, dtype=np.float32)
+    if len(poly) >= 3:
+        pts = np.round(poly).astype(np.int32).reshape((-1, 1, 2))
+        cv2.fillPoly(mask, [pts], color=255)
+    return mask
+
+
 class DockwinPoseEstimator(PoseEstimatorPosePubNode):
-    """Estimate dock-window poses using OBB-assisted planar PnP.
+    """Estimate dock-window poses using OBB-assisted planar PnP with optional stereo depth.
 
     ``best_fit_quad`` keeps the previous generic estimator available for
     comparison and fallback.  The default ``improved`` mode follows the bin
     estimator's angle-assisted point matching, which is less sensitive to the
     cyclic ordering of noisy segmentation corners.
+
+    When ``use_depth_image`` is enabled and ``input_depth_image_topic`` is provided,
+    the node extracts the median stereo depth within the eroded segmentation mask
+    to anchor the 3D translation distance while retaining PnP orientation.
     """
 
     def __init__(self):
@@ -86,6 +110,36 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
             .get_parameter_value()
             .string_value
         )
+        self.input_depth_image_topic = (
+            self.declare_parameter("input_depth_image_topic", "")
+            .get_parameter_value()
+            .string_value
+        )
+        self.use_depth_image = (
+            self.declare_parameter("use_depth_image", True)
+            .get_parameter_value()
+            .bool_value
+        )
+        self.depth_sync_slop = (
+            self.declare_parameter("depth_sync_slop", 0.1)
+            .get_parameter_value()
+            .double_value
+        )
+        self.mask_erosion_iters = (
+            self.declare_parameter("mask_erosion_iters", 2)
+            .get_parameter_value()
+            .integer_value
+        )
+        self.min_depth = (
+            self.declare_parameter("min_depth", 0.2)
+            .get_parameter_value()
+            .double_value
+        )
+        self.max_depth = (
+            self.declare_parameter("max_depth", 15.0)
+            .get_parameter_value()
+            .double_value
+        )
 
         self._pose_publishers = {
             frame_name: self.create_publisher(
@@ -94,18 +148,60 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
             for frame_name in self.frame_name_remap.values()
         }
         self._filtered_tvecs = {}
-        self.detections_sub = self.create_subscription(
-            DetectionArray,
-            detections_topic,
-            self.detections_callback,
-            qos_profile_sensor_data,
-        )
+
+        if self.use_depth_image and self.input_depth_image_topic:
+            self.cv_bridge = CvBridge()
+            self._detections_sub = message_filters.Subscriber(
+                self,
+                DetectionArray,
+                detections_topic,
+                qos_profile=qos_profile_sensor_data,
+            )
+            self._depth_sub = message_filters.Subscriber(
+                self,
+                Image,
+                self.input_depth_image_topic,
+                qos_profile=qos_profile_sensor_data,
+            )
+            self._time_sync = message_filters.ApproximateTimeSynchronizer(
+                [self._detections_sub, self._depth_sub],
+                queue_size=10,
+                slop=self.depth_sync_slop,
+            )
+            self._time_sync.registerCallback(self.synced_detections_callback)
+        else:
+            self.detections_sub = self.create_subscription(
+                DetectionArray,
+                detections_topic,
+                self.detections_callback,
+                qos_profile_sensor_data,
+            )
 
     @property
     def pose_publishers(self):
         return self._pose_publishers
 
+    def synced_detections_callback(
+        self, detections_msg: DetectionArray, depth_msg: Image
+    ):
+        try:
+            depth_img = self.cv_bridge.imgmsg_to_cv2(
+                depth_msg, desired_encoding="passthrough"
+            )
+        except Exception as exc:
+            self.get_logger().warn(
+                f"Failed to convert depth image from {self.input_depth_image_topic}: {exc}"
+            )
+            depth_img = None
+
+        self._process_detections(detections_msg, depth_img)
+
     def detections_callback(self, msg: DetectionArray):
+        self._process_detections(msg, depth_img=None)
+
+    def _process_detections(
+        self, msg: DetectionArray, depth_img: Optional[np.ndarray] = None
+    ):
         filtered_detections = filter_detections_by_num_points(msg, 3)
         best_detections = get_best_detections_per_class(
             filtered_detections, self.input_detection_classes
@@ -127,6 +223,13 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
                 )
                 continue
 
+            if depth_img is not None and self.use_depth_image:
+                measured_depth = self._extract_mask_depth(depth_img, detection)
+                if np.isfinite(measured_depth) and measured_depth > 0.0:
+                    tvec = self._refine_translation_with_depth(
+                        detection, tvec, measured_depth
+                    )
+
             depth = float(tvec[2, 0])
             if not np.isfinite(depth) or depth <= 0.0:
                 self.get_logger().warn(
@@ -145,6 +248,76 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
                 ]
             )
             self.publish_data(tvec, rvec, object_points, msg.header, frame_name)
+
+    def _extract_mask_depth(
+        self, depth_img: np.ndarray, detection: Detection
+    ) -> float:
+        """Extract median depth in meters from the YOLO detection mask."""
+        if depth_img is None or detection is None:
+            return float("nan")
+
+        mask_polygon = get_detection_polygon(detection)
+        if len(mask_polygon) < 3:
+            return float("nan")
+
+        h, w = depth_img.shape[:2]
+        det_w = getattr(detection.mask, "width", w) or w
+        det_h = getattr(detection.mask, "height", h) or h
+
+        if (det_w, det_h) != (w, h):
+            scale_x = float(w) / float(det_w)
+            scale_y = float(h) / float(det_h)
+            scaled_polygon = mask_polygon * np.array([scale_x, scale_y], dtype=np.float32)
+        else:
+            scaled_polygon = mask_polygon
+
+        binary_mask = _polygon_to_binary_mask(scaled_polygon, (w, h))
+
+        if self.mask_erosion_iters > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            eroded = cv2.erode(
+                binary_mask, kernel, iterations=self.mask_erosion_iters
+            )
+            if np.any(eroded > 0):
+                binary_mask = eroded
+
+        masked_depth = depth_img[binary_mask > 0].astype(np.float32)
+        if masked_depth.size == 0:
+            return float("nan")
+
+        # Auto-detect millimeter encoding (e.g. 16UC1 from OAK-D depth)
+        if np.issubdtype(depth_img.dtype, np.integer) or (
+            np.nanmedian(masked_depth) > 50.0
+        ):
+            masked_depth = masked_depth / 1000.0
+
+        valid_mask = (
+            np.isfinite(masked_depth)
+            & (masked_depth >= self.min_depth)
+            & (masked_depth <= self.max_depth)
+        )
+        valid_depths = masked_depth[valid_mask]
+
+        if valid_depths.size == 0:
+            return float("nan")
+
+        return float(np.median(valid_depths))
+
+    def _refine_translation_with_depth(
+        self, detection: Detection, tvec: np.ndarray, measured_depth: float
+    ) -> np.ndarray:
+        """Refine translation vector using measured stereo depth."""
+        pnp_depth = float(tvec[2, 0])
+        if pnp_depth > 1e-4:
+            scale = measured_depth / pnp_depth
+            refined_tvec = (tvec * scale).astype(np.float32)
+            refined_tvec[2, 0] = np.float32(measured_depth)
+            return refined_tvec
+        else:
+            centroid_pos = get_detection_centroid_position(
+                detection, self.camera, measured_depth
+            )
+            return centroid_pos.reshape((3, 1)).astype(np.float32)
 
     def _estimate_with_oriented_quad(self, class_name, detection):
         object_points_2d = self.object_points[class_name]
