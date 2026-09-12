@@ -50,7 +50,7 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
             .string_value
         )
         self.odom_ned_topic = (
-            self.declare_parameter("odom_ned", "/uav2/odom_ned")
+            self.declare_parameter("odom_ned", "/uav/odom_ned")
             .get_parameter_value()
             .string_value
         )
