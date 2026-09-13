@@ -10,14 +10,22 @@ HELIPAD_RADII = {
     "outer_circle": 0.762,
 }
 
-WINDOW_OBJECT_POINTS_DICT = {
-    "red_window": [(0.0, 0.0), (0.0, 0.29), (0.21, 0.29), (0.21, 0.0)],
-    "green_window": [(0.0, 0.0), (0.0, 0.29), (0.21, 0.29), (0.21, 0.0)],
-    "blue_window": [(0.0, 0.0), (0.0, 0.29), (0.21, 0.29), (0.21, 0.0)],
+# WINDOW_OBJECT_POINTS_DICT = {
+#     "red_window": [(0.0, 0.0), (0.0, 0.29), (0.21, 0.29), (0.21, 0.0)],
+#     "green_window": [(0.0, 0.0), (0.0, 0.29), (0.21, 0.29), (0.21, 0.0)],
+#     "blue_window": [(0.0, 0.0), (0.0, 0.29), (0.21, 0.29), (0.21, 0.0)],
+# }
+
+WINDOW_OBJECT_POINTS_DICT = {  # includes the black borders
+    "red_window": [(0.0, 0.0), (0.0, 0.36), (0.28, 0.36), (0.28, 0.0)],
+    "green_window": [(0.0, 0.0), (0.0, 0.36), (0.28, 0.36), (0.28, 0.0)],
+    "blue_window": [(0.0, 0.0), (0.0, 0.36), (0.28, 0.36), (0.28, 0.0)],
+    "null_window": [(0.0, 0.0), (0.0, 0.36), (0.28, 0.36), (0.28, 0.0)],
 }
 
 WINDOW_FRAME_REMAP = {
     "red_window": "dockwin/red",
     "green_window": "dockwin/green",
     "blue_window": "dockwin/blue",
+    "null_window": "dockwin/null",
 }
