@@ -64,10 +64,10 @@ class DockPoseEstimator(Node):
         ).value
 
         self.dock_length_m = float(
-            self.declare_parameter("dock_length_m", 6.604).value
+            self.declare_parameter("dock_length_m", 3.048).value
         )
         self.dock_width_m = float(
-            self.declare_parameter("dock_width_m", 3.048).value
+            self.declare_parameter("dock_width_m", 6.604).value
         )
         self.bev_scale = float(self.declare_parameter("bev_scale", 0.025).value)
         self.match_threshold = float(
