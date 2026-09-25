@@ -22,6 +22,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image
+from visualization_msgs.msg import Marker
 
 import tf2_geometry_msgs
 import tf2_ros
@@ -123,6 +124,9 @@ class DockPoseEstimator(Node):
 
         self.pose_pub = self.create_publisher(
             PoseStamped, self.pose_topic, 10
+        )
+        self.marker_pub = self.create_publisher(
+            Marker, f"{self.pose_topic}/marker", 10
         )
         self.debug_pub = (
             self.create_publisher(Image, self.debug_topic, 10)
@@ -415,6 +419,7 @@ class DockPoseEstimator(Node):
                 transform,
             )
             self.pose_pub.publish(transformed_pose)
+            self.marker_pub.publish(self._dock_pose_marker(transformed_pose))
 
             
         except tf2_ros.TransformException as e:
@@ -428,6 +433,23 @@ class DockPoseEstimator(Node):
             metres_per_pixel,
             transformed_pose,
         )
+
+    @staticmethod
+    def _dock_pose_marker(pose):
+        marker = Marker()
+        marker.header = pose.header
+        marker.ns = "dock_pose"
+        marker.id = 0
+        marker.type = Marker.TEXT_VIEW_FACING
+        marker.action = Marker.ADD
+        marker.pose = pose.pose
+        marker.scale.z = 0.5
+        marker.color.r = 1.0
+        marker.color.g = 1.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0
+        marker.text = "Dock Pose"
+        return marker
 
     def _draw_match(self, display, match, center_u, center_v):
         candidate = self._candidate(match["scale"], match["angle_deg"], 1.0)
