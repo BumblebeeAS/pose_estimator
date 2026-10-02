@@ -48,7 +48,7 @@ class DockPoseEstimator(Node):
         super().__init__("dock_lidar_pose_estimator_node")
 
         self.target_frame_id = self.declare_parameter(
-            "target_frame_id", "asv5/odom"
+            "target_frame_id", "asv5/base_link"
         ).value
         self.input_topic = self.declare_parameter(
             "input_bev_topic", "/asv5/bev"
@@ -66,16 +66,31 @@ class DockPoseEstimator(Node):
             "pose_frame_id", "asv5/base_link"
         ).value
 
+        # Simulation uses the RX26 platform template and its larger dock
+        # dimensions; real runs default to the measured dock_single template.
+        # All three stay overridable via launch-file template_path /
+        # dock_length_m / dock_width_m, which take precedence over use_sim.
+        self.use_sim = bool(self.declare_parameter("use_sim", False).value)
+        if self.use_sim:
+            default_template_filename = "rx26_sim_platform_template.png"
+            default_dock_length_m = 3.048
+            default_dock_width_m = 6.604
+        else:
+            default_template_filename = "dock_single.png"
+            default_dock_length_m = 2.5
+            default_dock_width_m = 2.5
+        self.default_template_filename = default_template_filename
+
         self.dock_length_m = float(
-            self.declare_parameter("dock_length_m", 2.5).value
+            self.declare_parameter("dock_length_m", default_dock_length_m).value
         )
         self.dock_width_m = float(
-            self.declare_parameter("dock_width_m", 2.5).value
+            self.declare_parameter("dock_width_m", default_dock_width_m).value
         )
 
         self.bev_scale = float(self.declare_parameter("bev_scale", 0.025).value)
         self.match_threshold = float(
-            self.declare_parameter("match_threshold", 0.50).value
+            self.declare_parameter("match_threshold", 0.40).value
         )
         self.search_downsample = float(
             self.declare_parameter("search_downsample", 0.5).value
@@ -162,8 +177,9 @@ class DockPoseEstimator(Node):
         )
 
         self.get_logger().info(
-            "Dock template search: nominal=%dx%d px, BEV scale=%.3f m/px"
+            "Dock template search: use_sim=%s nominal=%dx%d px, BEV scale=%.3f m/px"
             % (
+                self.use_sim,
                 self.nominal_template_width,
                 self.nominal_template_height,
                 self.bev_scale,
@@ -191,18 +207,19 @@ class DockPoseEstimator(Node):
         if self.track_angle_window_deg < 0.0 or self.track_scale_window < 0.0:
             raise ValueError("track windows must be non-negative")
 
-    @staticmethod
-    def _default_template_path():
+    def _default_template_path(self):
         try:
             package_share = Path(get_package_share_directory("lidar_segmentation2"))
-            return str(package_share / "templates" / "dock_single.png")
+            return str(
+                package_share / "templates" / self.default_template_filename
+            )
         except PackageNotFoundError:
             source_root = Path(__file__).resolve().parents[2]
             return str(
                 source_root
                 / "lidar_segmentation2"
                 / "templates"
-                / "dock_single.png"
+                / self.default_template_filename
             )
 
     @staticmethod
