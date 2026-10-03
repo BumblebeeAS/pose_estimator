@@ -27,7 +27,6 @@ setup(
     maintainer_email="todo@todo.com",
     description="Vision-based pose estimation",
     license="TODO: License declaration",
-    tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "points_pose_estimator_node = pose_estimator.points_pose_estimator_node:main",
