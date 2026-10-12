@@ -16,6 +16,7 @@ from pose_estimator.config.robotx26_object_points import (
 )
 from pose_estimator.utils.detections import (
     filter_detections_by_num_points,
+    filter_detections_by_score,
     get_best_detections_per_class,
     get_detection_obb,
     get_detection_polygon,
@@ -143,6 +144,13 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
             .get_parameter_value()
             .double_value
         )
+        self.min_confidence = (
+            self.declare_parameter("min_confidence", 0.3)
+            .get_parameter_value()
+            .double_value
+        )
+        if not 0.0 <= self.min_confidence <= 1.0:
+            raise ValueError("min_confidence must be in the range [0, 1]")
 
         self._pose_publishers = {
             frame_name: self.create_publisher(
@@ -206,6 +214,10 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         self, msg: DetectionArray, depth_img: Optional[np.ndarray] = None
     ):
         filtered_detections = filter_detections_by_num_points(msg, 3)
+        if self.min_confidence > 0.0:
+            filtered_detections = filter_detections_by_score(
+                filtered_detections, self.min_confidence
+            )
         best_detections = get_best_detections_per_class(
             filtered_detections, self.input_detection_classes
         )

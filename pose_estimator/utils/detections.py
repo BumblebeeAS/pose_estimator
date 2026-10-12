@@ -283,6 +283,29 @@ def filter_detections_by_num_points(
     return filtered_detections_msg
 
 
+def filter_detections_by_score(
+    detection_array_msg: DetectionArray, min_score: float
+) -> DetectionArray:
+    """Filters detections based on their confidence score.
+
+    Args:
+        detection_array_msg (DetectionArray): Array of Detections.
+        min_score (float): Minimum confidence score required.
+
+    Returns:
+        DetectionArray: Filtered array of detections.
+    """
+    filtered_detections = [
+        detection
+        for detection in detection_array_msg.detections
+        if detection.score >= min_score
+    ]
+    filtered_detections_msg = DetectionArray(
+        header=detection_array_msg.header, detections=filtered_detections
+    )
+    return filtered_detections_msg
+
+
 def get_best_detections_per_class(
     detection_array_msg: DetectionArray, classes: List[str]
 ) -> Dict[str, Detection]:
