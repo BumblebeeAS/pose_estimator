@@ -79,6 +79,7 @@ class DockPoseEstimator(Node):
             default_template_filename = "dock_single.png"
             default_dock_length_m = 2.5
             default_dock_width_m = 2.5
+            
         self.default_template_filename = default_template_filename
 
         self.dock_length_m = float(
@@ -88,7 +89,7 @@ class DockPoseEstimator(Node):
             self.declare_parameter("dock_width_m", default_dock_width_m).value
         )
 
-        self.bev_scale = float(self.declare_parameter("bev_scale", 0.025).value)
+        self.bev_scale = float(self.declare_parameter("bev_scale", 0.04).value)
         self.match_threshold = float(
             self.declare_parameter("match_threshold", 0.40).value
         )
@@ -96,10 +97,10 @@ class DockPoseEstimator(Node):
             self.declare_parameter("search_downsample", 0.5).value
         )
         self.min_template_scale = float(
-            self.declare_parameter("min_template_scale", 0.8).value
+            self.declare_parameter("min_template_scale", 1.0).value
         )
         self.max_template_scale = float(
-            self.declare_parameter("max_template_scale", 2.0).value
+            self.declare_parameter("max_template_scale", 1.05).value
         )
         self.template_scale_step = float(
             self.declare_parameter("template_scale_step", 0.05).value
@@ -108,7 +109,7 @@ class DockPoseEstimator(Node):
             self.declare_parameter("coarse_angle_step_deg", 15.0).value
         )
         self.fine_angle_step_deg = float(
-            self.declare_parameter("fine_angle_step_deg", 1.0).value
+            self.declare_parameter("fine_angle_step_deg", 0.5).value
         )
         self.entry_offset_dist = float(
             self.declare_parameter("entry_offset_dist", 0.0).value
@@ -119,10 +120,20 @@ class DockPoseEstimator(Node):
             self.declare_parameter("track_search_radius_m", 5.0).value
         )
         self.track_angle_window_deg = float(
-            self.declare_parameter("track_angle_window_deg", 15.0).value
+            self.declare_parameter("track_angle_window_deg", 30.0).value
         )
         self.track_scale_window = float(
             self.declare_parameter("track_scale_window", 0.1).value
+        )
+
+        # Penalise BEV structure that overlaps the white "key regions" of the
+        # inverted template (the docking pocket and any other hand-edited
+        # keep-clear zones) once the template is matched. The inverted
+        # template's brightness is used directly as pixel weights, so no
+        # foreground threshold is required. ``square_penalty_weight`` scales
+        # the penalty; 0 restores the unpenalised template match.
+        self.square_penalty_weight = float(
+            self.declare_parameter("square_penalty_weight", 1.0).value
         )
 
         self._validate_parameters()
@@ -131,6 +142,10 @@ class DockPoseEstimator(Node):
             "template_path", default_template_path
         ).value
         self.template_source = self._load_template(template_path)
+        inverted_template_path = self.declare_parameter(
+            "inverted_template_path", self._default_inverted_template_path()
+        ).value
+        self.inverted_source = self._load_mask_template(inverted_template_path)
         self.nominal_template_width = max(
             1, int(round(self.dock_length_m / self.bev_scale))
         )
@@ -206,6 +221,8 @@ class DockPoseEstimator(Node):
             raise ValueError("track_search_radius_m must be positive")
         if self.track_angle_window_deg < 0.0 or self.track_scale_window < 0.0:
             raise ValueError("track windows must be non-negative")
+        if self.square_penalty_weight < 0.0:
+            raise ValueError("square_penalty_weight must be non-negative")
 
     def _default_template_path(self):
         try:
@@ -222,8 +239,11 @@ class DockPoseEstimator(Node):
                 / self.default_template_filename
             )
 
-    @staticmethod
-    def _load_template(template_path):
+    def _default_inverted_template_path(self):
+        default_path = Path(self._default_template_path())
+        return str(default_path.with_name(f"inverted_{self.default_template_filename}"))
+
+    def _load_template(self, template_path):
         template = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
         if template is None:
             raise FileNotFoundError(f"Could not load dock template: {template_path}")
@@ -231,8 +251,35 @@ class DockPoseEstimator(Node):
         points = cv2.findNonZero(template)
         if points is None:
             raise ValueError(f"Dock template has no foreground: {template_path}")
-        x, y, width, height = cv2.boundingRect(points)
+        # Remember the crop so the inverted keep-clear mask stays pixel-aligned.
+        self.template_shape = template.shape[:2]
+        self.template_crop = cv2.boundingRect(points)
+        x, y, width, height = self.template_crop
         return template[y:y + height, x:x + width]
+
+    def _load_mask_template(self, mask_path):
+        """Load the inverted template, cropped to the primary template's box.
+
+        The mask's white (bright) pixels mark regions that must stay clear in
+        the BEV. A missing file only disables the penalty, it is not fatal.
+        """
+        if not mask_path:
+            return None
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            self.get_logger().warning(
+                f"Could not load inverted template: {mask_path}. "
+                "Footprint penalty disabled."
+            )
+            return None
+        if mask.shape[:2] != self.template_shape:
+            mask = cv2.resize(
+                mask,
+                (self.template_shape[1], self.template_shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        x, y, width, height = self.template_crop
+        return mask[y:y + height, x:x + width]
 
     def camera_info_callback(self, msg):
         if len(msg.k) == 9 and msg.k[2] > 0.0 and msg.k[5] > 0.0:
@@ -258,8 +305,11 @@ class DockPoseEstimator(Node):
             borderValue=0,
         )
 
-    def _candidate(self, scale, angle_deg, downsample):
-        key = (round(scale, 4), round(angle_deg % 360.0, 3), downsample)
+    def _candidate(self, scale, angle_deg, downsample, mask=False):
+        source = self.inverted_source if mask else self.template_source
+        if source is None:
+            return None
+        key = (round(scale, 4), round(angle_deg % 360.0, 3), downsample, mask)
         if key in self.candidate_cache:
             return self.candidate_cache[key]
 
@@ -272,7 +322,7 @@ class DockPoseEstimator(Node):
             int(round(self.nominal_template_height * scale * downsample)),
         )
         resized = cv2.resize(
-            self.template_source,
+            source,
             (width, height),
             interpolation=cv2.INTER_NEAREST,
         )
@@ -312,13 +362,51 @@ class DockPoseEstimator(Node):
         _, score, _, location = cv2.minMaxLoc(result)
         if not np.isfinite(score):
             return None
+        score = 1.0 - float(min_val)
+        location = min_loc
+
+        # Penalise BEV structure lighting up the inverted template's keep-clear
+        # key regions at this pose. This is the "overlap of the white portion":
+        # the inverted template's brightness weights each pixel, so a candidate
+        # that drops the dock over foreign structure scores lower.
+        penalty = self._mask_penalty(region, float(scale), float(angle_deg), location)
+        score = score - self.square_penalty_weight * penalty
         return {
-            "score": float(score),
+            "score": score,
+            "penalty": penalty,
             "center_u": (x0 + location[0] + cand_w / 2.0) / self.search_downsample,
             "center_v": (y0 + location[1] + cand_h / 2.0) / self.search_downsample,
             "angle_deg": float(angle_deg) % 360.0,
             "scale": float(scale),
         }
+
+    def _mask_penalty(self, region, scale, angle_deg, location):
+        """Weighted overlap between BEV structure and the inverted key regions.
+
+        The inverted template is placed at the match (same resize and rotation
+        as the primary candidate) and its brightness is used as per-pixel
+        weights, so no foreground threshold is needed. Returns
+        ``overlap / total_weight`` normalised by full intensity, in ``[0, 1]``:
+        0 means the keep-clear regions are empty, 1 means they are fully
+        covered by structure.
+        """
+        mask = self._candidate(scale, angle_deg, self.search_downsample, mask=True)
+        if mask is None:
+            return 0.0
+
+        loc_x, loc_y = int(location[0]), int(location[1])
+        x1 = min(region.shape[1], loc_x + mask.shape[1])
+        y1 = min(region.shape[0], loc_y + mask.shape[0])
+        if x1 <= loc_x or y1 <= loc_y:
+            return 0.0
+
+        weights = mask[:y1 - loc_y, :x1 - loc_x].astype(np.float32)
+        total = float(weights.sum())
+        if total <= 0.0:
+            return 0.0
+        image_patch = region[loc_y:y1, loc_x:x1].astype(np.float32)
+        overlap = float((image_patch * weights).sum())
+        return overlap / (total * 255.0)
 
     def _search(self, image, pairs):
         """Return the best whole-image match over ``(scale, angle_deg)`` pairs."""
@@ -494,14 +582,26 @@ class DockPoseEstimator(Node):
         candidate = self._candidate(match["scale"], match["angle_deg"], 1.0)
         top_left_x = int(round(center_u - candidate.shape[1] / 2.0))
         top_left_y = int(round(center_v - candidate.shape[0] / 2.0))
-        contours, _ = cv2.findContours(
-            candidate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        translated_contours = []
         translation = np.array([[[top_left_x, top_left_y]]], dtype=np.int32)
-        for contour in contours:
-            translated_contours.append(contour.astype(np.int32) + translation)
-        cv2.drawContours(display, translated_contours, -1, (0, 255, 0), 2)
+        # Green: matched dock template. Orange: inverted keep-clear key regions.
+        overlays = (
+            (candidate, (0, 255, 0), 2),
+            (
+                self._candidate(match["scale"], match["angle_deg"], 1.0, mask=True),
+                (0, 128, 255),
+                2,
+            ),
+        )
+        for source, color, thickness in overlays:
+            if source is None:
+                continue
+            contours, _ = cv2.findContours(
+                source, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            translated_contours = [
+                contour.astype(np.int32) + translation for contour in contours
+            ]
+            cv2.drawContours(display, translated_contours, -1, color, thickness)
         cv2.circle(
             display,
             (int(round(center_u)), int(round(center_v))),
@@ -585,10 +685,11 @@ class DockPoseEstimator(Node):
         label = "%s %.0fms" % (mode, elapsed_ms)
         if match is not None:
             self._draw_match(display, match)
-            label += " score=%.3f angle=%.1f scale=%.2f" % (
+            label += " score=%.3f angle=%.1f scale=%.2f pen=%.3f" % (
                 match["score"],
                 match["angle_deg"],
                 match["scale"],
+                match.get("penalty", 0.0),
             )
             if pose_result is not None:
                 x_forward, y_left, bearing_yaw, metres_per_pixel = pose_result
