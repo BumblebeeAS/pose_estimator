@@ -81,7 +81,7 @@ class DockPoseEstimator(Node):
             default_dock_length_m = 3.048
             default_dock_width_m = 6.604
         else:
-            default_template_filename = "dock_single.png"
+            default_template_filename = "dock_single_real.png"
             default_dock_length_m = 2.5
             default_dock_width_m = 2.5
             
