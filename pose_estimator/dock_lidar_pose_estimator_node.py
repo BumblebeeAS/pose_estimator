@@ -11,7 +11,7 @@ from ament_index_python.packages import (
     get_package_share_directory,
 )
 from cv_bridge import CvBridge
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point, PoseStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -23,6 +23,7 @@ from rclpy.qos import (
 )
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker
 
 import tf2_geometry_msgs
@@ -116,6 +117,17 @@ class DockPoseEstimator(Node):
             self.declare_parameter("entry_offset_dist", 0.0).value
         )
 
+        # 3D template marker. The BEV grey level is the highest z per cell
+        # (bev_node: bev_z_min -> 1, bev_z_max -> 255, 0 = empty), so these
+        # must match bev_node's bev_z_min / bev_z_max (os0_filter min/max
+        # height) to lift the template pixels to their true heights.
+        self.bev_z_min = float(self.declare_parameter("bev_z_min", -0.65).value)
+        self.bev_z_max = float(self.declare_parameter("bev_z_max", 0.5).value)
+        # Draw every Nth template pixel as a cube; 1 draws all of them.
+        self.template_marker_stride = int(
+            self.declare_parameter("template_marker_stride", 2).value
+        )
+
         self._validate_parameters()
         default_template_path = self._default_template_path()
         template_path = self.declare_parameter(
@@ -138,6 +150,9 @@ class DockPoseEstimator(Node):
         )
         self.marker_pub = self.create_publisher(
             Marker, f"{self.pose_topic}/marker", 10
+        )
+        self.template_marker_pub = self.create_publisher(
+            Marker, f"{self.pose_topic}/template_marker", 10
         )
         self.debug_pub = (
             self.create_publisher(Image, self.debug_topic, 10)
@@ -191,6 +206,10 @@ class DockPoseEstimator(Node):
             raise ValueError("template_scale_step must be positive")
         if self.coarse_angle_step_deg <= 0.0 or self.fine_angle_step_deg <= 0.0:
             raise ValueError("angle steps must be positive")
+        if self.bev_z_max <= self.bev_z_min:
+            raise ValueError("bev_z_max must be > bev_z_min")
+        if self.template_marker_stride < 1:
+            raise ValueError("template_marker_stride must be >= 1")
 
     def _default_template_path(self):
         try:
@@ -393,6 +412,61 @@ class DockPoseEstimator(Node):
         marker.text = "Dock Pose"
         return marker
 
+    def _template_marker(self, msg, image_center, match):
+        """Matched template as a CUBE_LIST in the BEV's base frame.
+
+        Each non-empty template pixel (at the matched scale and rotation) is
+        placed at its BEV position and lifted to the height its grey level
+        encodes, coloured low (blue) to high (red), so the template can be
+        compared against the point cloud in 3D.
+        """
+        candidate = self._candidate(match["scale"], match["angle_deg"], 1.0)
+        stride = self.template_marker_stride
+        sampled = candidate[::stride, ::stride]
+        rows, cols = np.nonzero(sampled)
+        grey = sampled[rows, cols].astype(np.float32)
+
+        # Pixel centres in full-resolution BEV pixels, same placement as
+        # _draw_match (candidate centred on the match centre).
+        u = match["center_u"] - candidate.shape[1] / 2.0 + cols * stride + 0.5
+        v = match["center_v"] - candidate.shape[0] / 2.0 + rows * stride + 0.5
+        x, y = self._bev_pixel_to_asv(u, v, image_center, self.bev_scale)
+        z = self.bev_z_min + (grey - 1.0) / 254.0 * (self.bev_z_max - self.bev_z_min)
+        bgr = cv2.applyColorMap(
+            grey.astype(np.uint8).reshape(-1, 1), cv2.COLORMAP_JET
+        ).reshape(-1, 3) / 255.0
+
+        marker = Marker()
+        marker.header.stamp = msg.header.stamp
+        marker.header.frame_id = self.pose_frame_id
+        marker.ns = "dock_template"
+        marker.id = 0
+        marker.type = Marker.CUBE_LIST
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        cell = self.bev_scale * stride
+        marker.scale.x = cell
+        marker.scale.y = cell
+        marker.scale.z = cell
+        marker.points = [
+            Point(x=float(px), y=float(py), z=float(pz))
+            for px, py, pz in zip(x, y, z)
+        ]
+        marker.colors = [
+            ColorRGBA(r=float(r), g=float(g), b=float(b), a=0.8)
+            for b, g, r in bgr
+        ]
+        return marker
+
+    def _clear_template_marker(self, msg):
+        marker = Marker()
+        marker.header.stamp = msg.header.stamp
+        marker.header.frame_id = self.pose_frame_id
+        marker.ns = "dock_template"
+        marker.id = 0
+        marker.action = Marker.DELETE
+        return marker
+
     def _draw_match(self, display, match):
         center_u = match["center_u"]
         center_v = match["center_v"]
@@ -455,6 +529,11 @@ class DockPoseEstimator(Node):
         pose_result = None
         if accepted:
             pose_result = self._publish_pose(msg, image_center, match)
+            self.template_marker_pub.publish(
+                self._template_marker(msg, image_center, match)
+            )
+        else:
+            self.template_marker_pub.publish(self._clear_template_marker(msg))
 
         if display is None:
             return
