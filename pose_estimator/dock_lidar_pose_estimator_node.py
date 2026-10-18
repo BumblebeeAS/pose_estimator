@@ -39,6 +39,10 @@ class DockPoseEstimator(Node):
     improves. If the local search falls below ``match_threshold``, the same
     frame falls back to a full search.
 
+    Candidates are scored with ``TM_CCOEFF_NORMED`` (-1..1, higher is better),
+    which is invariant to brightness gain/offset, so the greyscale height BEV
+    and the greyscale template need not share an absolute intensity scale.
+
     This node uses ``Node`` directly because it estimates a 2D lidar pose,
     not a camera-frame PnP pose. ``PoseEstimatorPosePubNode`` waits for
     camera info and expects ``rvec``/``tvec`` inputs, so it does not fit here.
@@ -308,17 +312,14 @@ class DockPoseEstimator(Node):
 
         if cand_h > region.shape[0] or cand_w > region.shape[1]:
             return None
-        result = cv2.matchTemplate(region, candidate, cv2.TM_SQDIFF_NORMED)
-        # TM_SQDIFF_NORMED is a mismatch cost: 0.0 is a perfect match, so the
-        # best location is the minimum. Report 1 - cost as a higher-is-better
-        # similarity so the rest of the node's "> best score" logic is unchanged.
-        min_val, _, min_loc, _ = cv2.minMaxLoc(result)
-        if not np.isfinite(min_val):
+        result = cv2.matchTemplate(region, candidate, cv2.TM_CCOEFF_NORMED)
+        # TM_CCOEFF_NORMED is a similarity in [-1, 1]: the best location is
+        # the maximum.
+        _, max_val, _, location = cv2.minMaxLoc(result)
+        if not np.isfinite(max_val):
             return None
-        score = 1.0 - float(min_val)
-        location = min_loc
         return {
-            "score": score,
+            "score": float(max_val),
             "center_u": (x0 + location[0] + cand_w / 2.0) / self.search_downsample,
             "center_v": (y0 + location[1] + cand_h / 2.0) / self.search_downsample,
             "angle_deg": float(angle_deg) % 360.0,
