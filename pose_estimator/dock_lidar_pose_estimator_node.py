@@ -14,7 +14,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import Point, PoseStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.node import Node
+from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 from rclpy.qos import (
     HistoryPolicy,
     QoSProfile,
@@ -30,7 +30,7 @@ import tf2_geometry_msgs
 import tf2_ros
 
 
-class DockPoseEstimator(Node):
+class DockPoseEstimator(LifecycleNode):
     """Continuously estimate dock pose from a mono BEV image using template matching.
 
     Every frame runs a full coarse-to-fine search over the whole BEV and all
@@ -41,9 +41,14 @@ class DockPoseEstimator(Node):
     which is invariant to brightness gain/offset, so the greyscale height BEV
     and the greyscale template need not share an absolute intensity scale.
 
-    This node uses ``Node`` directly because it estimates a 2D lidar pose,
-    not a camera-frame PnP pose. ``PoseEstimatorPosePubNode`` waits for
-    camera info and expects ``rvec``/``tvec`` inputs, so it does not fit here.
+    This node subclasses ``LifecycleNode`` directly because it estimates a 2D
+    lidar pose, not a camera-frame PnP pose. ``PoseEstimatorPosePubNode`` waits
+    for camera info and expects ``rvec``/``tvec`` inputs, so it does not fit
+    here.
+
+    Lifecycle: configure creates the publishers, activate subscribes to the
+    BEV (the search only runs while active), deactivate unsubscribes. Set
+    ``activate_on_start`` to activate without a lifecycle manager.
     """
 
     def __init__(self):
@@ -127,6 +132,7 @@ class DockPoseEstimator(Node):
         self.template_marker_stride = int(
             self.declare_parameter("template_marker_stride", 2).value
         )
+        self.declare_parameter("activate_on_start", False)
 
         self._validate_parameters()
         default_template_path = self._default_template_path()
@@ -145,20 +151,45 @@ class DockPoseEstimator(Node):
         self.image_center = None
         self.candidate_cache = {}
 
-        self.pose_pub = self.create_publisher(
+        self.pose_pub = None
+        self.marker_pub = None
+        self.template_marker_pub = None
+        self.debug_pub = None
+        self.bev_sub = None
+        self.camera_info_sub = None
+
+        self.get_logger().info(
+            "Dock template search: use_sim=%s nominal=%dx%d px, BEV scale=%.3f m/px"
+            % (
+                self.use_sim,
+                self.nominal_template_width,
+                self.nominal_template_height,
+                self.bev_scale,
+            )
+        )
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+    def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self.pose_pub = self.create_lifecycle_publisher(
             PoseStamped, self.pose_topic, 10
         )
-        self.marker_pub = self.create_publisher(
+        self.marker_pub = self.create_lifecycle_publisher(
             Marker, f"{self.pose_topic}/marker", 10
         )
-        self.template_marker_pub = self.create_publisher(
+        self.template_marker_pub = self.create_lifecycle_publisher(
             Marker, f"{self.pose_topic}/template_marker", 10
         )
         self.debug_pub = (
-            self.create_publisher(Image, self.debug_topic, 10)
+            self.create_lifecycle_publisher(Image, self.debug_topic, 10)
             if self.debug_topic
             else None
         )
+        self.get_logger().info("Configured")
+        return super().on_configure(state)
+
+    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         # Depth 1 so frames arriving during a slow search are dropped rather
         # than queued; a mutually exclusive group serialises searches.
         bev_qos = QoSProfile(
@@ -179,19 +210,40 @@ class DockPoseEstimator(Node):
             self.camera_info_callback,
             qos_profile_sensor_data,
         )
+        self.get_logger().info(f"Activated, subscribed to {self.input_topic}")
+        return super().on_activate(state)
 
-        self.get_logger().info(
-            "Dock template search: use_sim=%s nominal=%dx%d px, BEV scale=%.3f m/px"
-            % (
-                self.use_sim,
-                self.nominal_template_width,
-                self.nominal_template_height,
-                self.bev_scale,
-            )
-        )
+    def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self._destroy_subscriptions()
+        self.get_logger().info("Deactivated")
+        return super().on_deactivate(state)
 
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+    def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
+        self._destroy_publishers()
+        self.candidate_cache = {}
+        self.get_logger().info("Cleaned up")
+        return super().on_cleanup(state)
+
+    def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
+        # Shutdown can be entered from any primary state, so tear down
+        # idempotently.
+        self._destroy_subscriptions()
+        self._destroy_publishers()
+        return TransitionCallbackReturn.SUCCESS
+
+    def _destroy_subscriptions(self):
+        for name in ("bev_sub", "camera_info_sub"):
+            sub = getattr(self, name)
+            if sub is not None:
+                self.destroy_subscription(sub)
+                setattr(self, name, None)
+
+    def _destroy_publishers(self):
+        for name in ("pose_pub", "marker_pub", "template_marker_pub", "debug_pub"):
+            pub = getattr(self, name)
+            if pub is not None:
+                self.destroy_publisher(pub)
+                setattr(self, name, None)
 
     def _validate_parameters(self):
         if self.bev_scale <= 0.0:
@@ -574,6 +626,9 @@ class DockPoseEstimator(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = DockPoseEstimator()
+    node.trigger_configure()
+    if node.get_parameter("activate_on_start").get_parameter_value().bool_value:
+        node.trigger_activate()
     executor = MultiThreadedExecutor(num_threads=2)
     executor.add_node(node)
     try:
