@@ -10,6 +10,7 @@ import tf2_ros
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.publisher import Publisher
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.wait_for_message import wait_for_message
@@ -118,11 +119,11 @@ class PoseEstimatorTransformPubNode(PoseEstimatorNode):
         try:
             t, q = get_translation_quaternion(tvec, rvec)
         except np.linalg.LinAlgError as e:
-            self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
+            self.get_logger().warning(f"Error in mat2quat, failed to convert R: {e}")
             return
         except Exception as e:
             # TODO: Not sure if an exception can occur here.
-            self.get_logger().warn(f"Rodrigues conversion failed: {e}")
+            self.get_logger().warning(f"Rodrigues conversion failed: {e}")
             return
 
         transform_stamped = get_transform_stamped(header, object_frame_id, t, q)
@@ -158,10 +159,10 @@ class PoseEstimatorPosePubNode(PoseEstimatorNode):
         try:
             t, q = get_translation_quaternion(tvec, rvec)
         except np.linalg.LinAlgError as e:
-            self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
+            self.get_logger().warning(f"Error in mat2quat, failed to convert R: {e}")
             return
         except Exception as e:
-            self.get_logger().warn(f"Rodrigues conversion failed: {e}")
+            self.get_logger().warning(f"Rodrigues conversion failed: {e}")
             return
 
         pose = get_pose_stamped(header, t, q)
@@ -182,6 +183,7 @@ class PoseEstimatorSinglePosePubNode(PoseEstimatorPosePubNode):
         self.object_frame_id = (
             self.declare_parameter(
                 "object_frame_id",
+                Parameter.Type.STRING,
                 descriptor=ParameterDescriptor(type=ParameterType.PARAMETER_STRING),
             )
             .get_parameter_value()
@@ -228,11 +230,11 @@ class PoseEstimatorDataPubNode(PoseEstimatorNode):
         try:
             t, q = get_translation_quaternion(tvec, rvec)
         except np.linalg.LinAlgError as e:
-            self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
+            self.get_logger().warning(f"Error in mat2quat, failed to convert R: {e}")
             return
         except Exception as e:
             # TODO: Not sure if an exception can occur here.
-            self.get_logger().warn(f"Rodrigues conversion failed: {e}")
+            self.get_logger().warning(f"Rodrigues conversion failed: {e}")
             return
 
         transform_stamped = get_transform_stamped(header, object_frame_id, t, q)
@@ -241,7 +243,7 @@ class PoseEstimatorDataPubNode(PoseEstimatorNode):
         try:
             covariance = estimate_covariance(object_points, rvec, tvec, self.camera)
         except np.linalg.LinAlgError as e:
-            self.get_logger().warn(
+            self.get_logger().warning(
                 f"Covariance estimation failed, inversion for FIM matrix failed: {e}"
             )
             return

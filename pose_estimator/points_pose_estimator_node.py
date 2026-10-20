@@ -36,7 +36,7 @@ class PointsPoseEstimator(PoseEstimatorSinglePosePubNode):
         image_points = to_numpy_f64(msg.image_points)
 
         if object_points.shape[0] < 4 or image_points.shape[0] < 4:
-            self.get_logger().warn(
+            self.get_logger().warning(
                 f"""Not enough point correspondences:
                 {object_points.shape[0]} object points and {image_points.shape[0]} image points"""
             )
@@ -66,7 +66,7 @@ class PointsPoseEstimator(PoseEstimatorSinglePosePubNode):
             )
 
         except Exception as e:
-            self.get_logger().warn(f"Pose estimation failed: {e}")
+            self.get_logger().warning(f"Pose estimation failed: {e}")
             return
 
         self.publish_data(tvec, rvec, object_points, msg.header, self.object_frame_id)
