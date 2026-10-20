@@ -12,7 +12,7 @@ from nav_msgs.msg import Odometry
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from rclpy.wait_for_message import wait_for_message
-from scipy.spatial import ConvexHull
+from scipy.spatial import ConvexHull, QhullError
 from tf_transformations import (
     quaternion_inverse,
     quaternion_matrix,
@@ -35,8 +35,9 @@ from pose_estimator.utils.pose_estimator import get_object_pose
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorSinglePosePubNode
 
 HELIPAD_ANNOTATION_COLORS = {
-    "outer_circle": "#e6194b",
-    "inner_circle": "#3cb44b",
+    "circle_1": "#e6194b",
+    "circle_2": "#3cb44b",
+    "circle_3": "#4363d8",
 }
 
 
@@ -127,7 +128,7 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
             self.get_logger().info("Setting up helipad pose estimator.")
             success, base_link_to_camera_tf = self.get_base_link_to_camera_transform()
             if not success:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     "Failed to get base_link to camera transform. Cannot proceed with pose estimation."
                 )
                 return
@@ -135,11 +136,11 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
             self.is_setup = True
             self.get_logger().info("Successfully set up helipad pose estimator.")
 
-        # We require at least 3 points for polygon creation
+        # A 2D convex hull requires at least three non-collinear points.
         filtered_detections = filter_detections_by_num_points(detections_msg, 3)
 
         # Only include relevant classes
-        relevant_classes = ["outer_circle", "inner_circle"]
+        relevant_classes = list(HELIPAD_RADII)
         required_objects = 1
 
         best_detections = get_best_detections_per_class(
@@ -147,7 +148,7 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
         )
         num_detected_objects = len(best_detections.keys())
         if num_detected_objects < required_objects:
-            self.get_logger().warn(
+            self.get_logger().warning(
                 f"""Insufficient detected objects.
                 Received: {num_detected_objects}, require: {required_objects}."""
             )
@@ -157,12 +158,16 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
         object_points = np.empty((0, 3), dtype=np.float32)
         vis_point_sets = []
         inlier_point_sets = []
+        annotation_colors = []
 
         for cls, detection in best_detections.items():
             helipad_radius = HELIPAD_RADII[cls]
 
             detection_polygon = get_detection_polygon(detection)
-            detection_convex_hull = ConvexHull(detection_polygon)
+            try:
+                detection_convex_hull = ConvexHull(detection_polygon)
+            except QhullError:
+                continue
             detection_convex_hull_coords = detection_polygon[
                 detection_convex_hull.vertices
             ]
@@ -170,16 +175,22 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
             # We need 5 points to fit an ellipse
             num_convex_hull_points = len(detection_convex_hull_coords)
             if num_convex_hull_points < 5:
-                self.get_logger().warn(
+                self.get_logger().warning(
                     f"""Insufficient points on convex hull.
                     Received: {num_convex_hull_points}, require: {5}."""
                 )
                 continue
 
-            ellipse, inlier_points = fit_ellipse_RANSAC(
-                detection_convex_hull_coords, num_iter=200, thresh=5.0
-            )
+            try:
+                ellipse, inlier_points = fit_ellipse_RANSAC(
+                    detection_convex_hull_coords, num_iter=200, thresh=5.0
+                )
+            except (ValueError, cv2.error):
+                continue
+            if len(inlier_points) < 5:
+                continue
             inlier_point_sets.append([inlier_points])
+            annotation_colors.append(HELIPAD_ANNOTATION_COLORS[cls])
 
             (fit_cx, fit_cy), (fit_axis1, fit_axis2), fit_angle = ellipse
             fit_r1, fit_r2 = fit_axis1 / 2, fit_axis2 / 2
@@ -200,10 +211,10 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
             )
             vis_point_sets.append([vis_points])
 
-        # Publish debug annotations
-        annotation_colors = [
-            HELIPAD_ANNOTATION_COLORS[cls] for cls in best_detections.keys()
-        ]
+        if len(object_points) < 5:
+            return
+
+        # Publish debug annotations for the circles that fitted successfully.
         ellipse_annotation = get_image_annotations(
             detections_msg.header,
             vis_point_sets,
@@ -237,7 +248,7 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
             # We do not refine the pose as the points are likely to have large re-projection error.
 
         except Exception as e:
-            self.get_logger().warn(f"Pose estimation failed: {e}")
+            self.get_logger().warning(f"Pose estimation failed: {e}")
             return
 
         # We know that the object has no roll or pitch in the odom_ned frame
