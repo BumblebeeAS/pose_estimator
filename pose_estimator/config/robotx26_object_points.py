@@ -5,9 +5,13 @@
 
 import numpy as np
 
+# https://robonation.gitbook.io/robotx-2026-team-handbook/section-3-autonomy-challenge/3.5-task-build-specifications
+
+# Section 3.5.8: diameters 1.5 m, 1.0 m, 0.5 m.
 HELIPAD_RADII = {
-    "inner_circle": 0.3048,
-    "outer_circle": 0.762,
+    "circle_1": 0.75,
+    "circle_2": 0.50,
+    "circle_3": 0.25,
 }
 
 # WINDOW_OBJECT_POINTS_DICT = {
