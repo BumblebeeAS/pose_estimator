@@ -27,6 +27,18 @@ WINDOW_OBJECT_POINTS_DICT = {  # includes the black borders
     "null_window": [(0.0, 0.0), (0.0, 0.36), (0.28, 0.36), (0.28, 0.0)],
 }
 
+# 1m x 1m square
+WINDOW_WHITE_PLANE_DICT = {
+    "dock_window_plane": np.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ]),
+    
+}
+
+
 WINDOW_FRAME_REMAP = {
     "red_window": "dockwin/red",
     "green_window": "dockwin/green",
