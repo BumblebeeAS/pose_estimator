@@ -27,6 +27,7 @@ from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 from visualization_msgs.msg import Marker
+from yolo_msgs.msg import DetectionArray
 
 from pose_estimator.dock_debug import (
     clear_template_marker,
@@ -125,6 +126,28 @@ class DockPoseEstimator(LifecycleNode):
             self.declare_parameter("fine_angle_step_deg", 0.5).value
         )
 
+        # YOLO ROI: the template is only searched around the best BEV YOLO
+        # box. An empty topic searches the whole BEV every frame.
+        self.detections_topic = self.declare_parameter(
+            "input_detections_topic", "/asv5/bev/yolo/detections"
+        ).value
+        # Slack around the box the template may extend into (m).
+        self.roi_padding_m = float(
+            self.declare_parameter("roi_padding_m", 0.5).value
+        )
+        # Detections older than this (vs the BEV stamp) are ignored.
+        self.detection_timeout_sec = float(
+            self.declare_parameter("detection_timeout_sec", 1.0).value
+        )
+        # Empty accepts any class.
+        self.detection_class_name = self.declare_parameter(
+            "detection_class_name", ""
+        ).value
+        # Without a fresh detection: True searches the whole BEV, False skips.
+        self.full_search_without_detection = bool(
+            self.declare_parameter("full_search_without_detection", False).value
+        )
+
         # 3D template marker. The BEV grey level is the highest z per cell
         # (bev_node: bev_z_min -> 1, bev_z_max -> 255, 0 = empty), so these
         # must match bev_node's bev_z_min / bev_z_max (os0_filter min/max
@@ -160,6 +183,8 @@ class DockPoseEstimator(LifecycleNode):
         self.debug_pub = None
         self.bev_sub = None
         self.camera_info_sub = None
+        self.detections_sub = None
+        self.latest_detections = None
 
         self.get_logger().info(
             "Dock template search: use_sim=%s nominal=%dx%d px, BEV scale=%.3f m/px"
@@ -213,6 +238,13 @@ class DockPoseEstimator(LifecycleNode):
             self.camera_info_callback,
             qos_profile_sensor_data,
         )
+        if self.detections_topic:
+            self.detections_sub = self.create_subscription(
+                DetectionArray,
+                self.detections_topic,
+                self.detections_callback,
+                qos_profile_sensor_data,  # yolo_node publishes best effort
+            )
         self.get_logger().info(f"Activated, subscribed to {self.input_topic}")
         return super().on_activate(state)
 
@@ -235,7 +267,8 @@ class DockPoseEstimator(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def _destroy_subscriptions(self):
-        for name in ("bev_sub", "camera_info_sub"):
+        self.latest_detections = None
+        for name in ("bev_sub", "camera_info_sub", "detections_sub"):
             sub = getattr(self, name)
             if sub is not None:
                 self.destroy_subscription(sub)
@@ -265,6 +298,8 @@ class DockPoseEstimator(LifecycleNode):
             raise ValueError("bev_z_max must be > bev_z_min")
         if self.template_marker_stride < 1:
             raise ValueError("template_marker_stride must be >= 1")
+        if self.roi_padding_m < 0.0:
+            raise ValueError("roi_padding_m must be non-negative")
 
     def _default_template_path(self):
         try:
@@ -295,6 +330,49 @@ class DockPoseEstimator(LifecycleNode):
     def camera_info_callback(self, msg):
         if len(msg.k) == 9 and msg.k[2] > 0.0 and msg.k[5] > 0.0:
             self.image_center = (float(msg.k[2]), float(msg.k[5]))
+
+    def detections_callback(self, msg):
+        self.latest_detections = msg
+
+    def _detection_roi(self, bev_msg):
+        """Full-resolution (x0, y0, x1, y1) around the best fresh YOLO box.
+
+        Padded by ``roi_padding_m`` and grown to fit the largest rotated
+        template, so any template pose centred in the box fits the window.
+        Returns None without a usable detection.
+        """
+        detections = self.latest_detections
+        if detections is None:
+            return None
+        age = (
+            Time.from_msg(bev_msg.header.stamp) - Time.from_msg(detections.header.stamp)
+        ).nanoseconds / 1e9
+        if abs(age) > self.detection_timeout_sec:
+            return None
+        candidates = [
+            d
+            for d in detections.detections
+            if not self.detection_class_name or d.class_name == self.detection_class_name
+        ]
+        if not candidates:
+            return None
+        best = max(candidates, key=lambda d: d.score)
+
+        template_diag = (
+            np.hypot(self.nominal_template_width, self.nominal_template_height)
+            * self.max_template_scale
+        )
+        padding = self.roi_padding_m / self.bev_scale
+        half_w = max(best.bbox.size.x / 2.0, template_diag / 2.0) + padding
+        half_h = max(best.bbox.size.y / 2.0, template_diag / 2.0) + padding
+        cx, cy = best.bbox.center.position.x, best.bbox.center.position.y
+        x0 = max(0, int(np.floor(cx - half_w)))
+        y0 = max(0, int(np.floor(cy - half_h)))
+        x1 = min(bev_msg.width, int(np.ceil(cx + half_w)))
+        y1 = min(bev_msg.height, int(np.ceil(cy + half_h)))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return x0, y0, x1, y1
 
     @staticmethod
     def _rotate_bound(image, angle_deg):
@@ -442,15 +520,30 @@ class DockPoseEstimator(LifecycleNode):
             (msg.height - 1) / 2.0,
         )
 
-        start = monotonic()
-        search_image = cv2.resize(
-            bev_image,
-            None,
-            fx=self.search_downsample,
-            fy=self.search_downsample,
-            interpolation=cv2.INTER_NEAREST,
+        roi = self._detection_roi(msg) if self.detections_topic else None
+        # Without a fresh detection the frame is skipped (no pose), but the
+        # debug image is still published.
+        skip = (
+            bool(self.detections_topic)
+            and roi is None
+            and not self.full_search_without_detection
         )
-        match = self.find_best_match(search_image)
+
+        start = monotonic()
+        match = None
+        if not skip:
+            x0, y0, x1, y1 = roi or (0, 0, bev_image.shape[1], bev_image.shape[0])
+            search_image = cv2.resize(
+                bev_image[y0:y1, x0:x1],
+                None,
+                fx=self.search_downsample,
+                fy=self.search_downsample,
+                interpolation=cv2.INTER_NEAREST,
+            )
+            match = self.find_best_match(search_image)
+            if match is not None:
+                match["center_u"] += x0
+                match["center_v"] += y0
         elapsed_ms = (monotonic() - start) * 1000.0
 
         accepted = match is not None and match["score"] >= self.match_threshold
@@ -490,6 +583,20 @@ class DockPoseEstimator(LifecycleNode):
         display = draw_debug_image(
             bev_image, image_center, elapsed_ms, match, candidate, accepted, position
         )
+        if roi is not None:
+            # Magenta: YOLO search window.
+            cv2.rectangle(display, roi[:2], roi[2:], (255, 0, 255), 1)
+        if skip:
+            cv2.putText(
+                display,
+                "no fresh YOLO detection, skipped",
+                (10, 48),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 0, 255),
+                1,
+                cv2.LINE_AA,
+            )
         debug_msg = self.bridge.cv2_to_imgmsg(display, encoding="bgr8")
         debug_msg.header = msg.header
         self.debug_pub.publish(debug_msg)
