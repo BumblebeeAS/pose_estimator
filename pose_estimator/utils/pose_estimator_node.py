@@ -69,7 +69,9 @@ class PoseEstimatorNode(Node, ABC):
         )
 
         # Get camera info
-        valid, camera_info = wait_for_message(CameraInfo, self, camera_info_topic)
+        valid, camera_info = wait_for_message(
+            CameraInfo, self, camera_info_topic, qos_profile=qos_profile_sensor_data
+        )
         if not valid:
             raise ValueError("Failed to get camera info")
         else:
