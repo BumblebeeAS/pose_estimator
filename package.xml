@@ -8,6 +8,14 @@
   <license>MIT</license>
 
   <!-- 3rd party -->
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>python3-sklearn</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>foxglove_msgs</exec_depend>
   <exec_depend>image_transport</exec_depend>
@@ -24,7 +32,6 @@
   <!-- Ours -->
   <exec_depend>bb_perception_msgs</exec_depend>
   <exec_depend>bb_robotx_msgs</exec_depend>
-  <exec_depend>yolo_ros_trt</exec_depend>
   <exec_depend>image_processing</exec_depend>
   <exec_depend>yolo_msgs</exec_depend>
 
