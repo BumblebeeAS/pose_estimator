@@ -24,6 +24,15 @@ class PointsPoseEstimator(PoseEstimatorSinglePosePubNode):
             .string_value
         )
 
+        # Enable for Y-up boards viewed in Y-down image coordinates.
+        self.homography_flip_object_y = self.declare_parameter("homography_flip_object_y", False).value
+
+        self.min_points = self.declare_parameter("min_points", 4).value
+        if self.min_points < 4:
+            raise ValueError("min_points must be at least 4")
+
+        self.max_reprojection_error = self.declare_parameter("max_reprojection_error", 2.0).value
+
         self.point_subscriber = self.create_subscription(
             PointCorrespondencesStamped,
             input_points_topic,
@@ -35,23 +44,33 @@ class PointsPoseEstimator(PoseEstimatorSinglePosePubNode):
         object_points = to_numpy_f64(msg.object_points)
         image_points = to_numpy_f64(msg.image_points)
 
-        if object_points.shape[0] < 4 or image_points.shape[0] < 4:
+        if min(len(object_points), len(image_points)) < self.min_points:
             self.get_logger().warning(
-                f"""Not enough point correspondences:
-                {object_points.shape[0]} object points and {image_points.shape[0]} image points"""
+                f"Not enough point correspondences: {len(object_points)} object points "
+                f"and {len(image_points)} image points; need {self.min_points}",
+                throttle_duration_sec=5.0,
             )
             return
 
-        object_points, image_points = filter_by_homography(object_points, image_points)
-
         try:
+            # Match board Y-up to image Y-down for MAGSAC; keep PnP in board coordinates.
+            if self.homography_flip_object_y:
+                object_points = object_points.copy()
+                object_points[:, 1] *= -1
+            object_points, image_points = filter_by_homography(object_points, image_points)
+            if self.homography_flip_object_y:
+                object_points[:, 1] *= -1  # Restore board coordinates for PnP.
+            if len(object_points) < self.min_points:
+                return
+
             # This step gives a rough estimate for pose refinement and
             # allows for quick termination if no inliers are found. This is useful
             # when there are few point correspondences and homography estimation
             # cannot determine if the points are inliers or not.
 
             rvec, tvec, inliers = get_object_pose(
-                self.camera, object_points, image_points
+                self.camera, object_points, image_points,
+                max_reprojection_error=self.max_reprojection_error
             )
 
             if inliers is None:
