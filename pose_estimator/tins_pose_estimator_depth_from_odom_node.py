@@ -1,3 +1,4 @@
+import cv2
 import message_filters
 import numpy as np
 import rclpy
@@ -12,6 +13,7 @@ from rclpy.wait_for_message import wait_for_message
 from yolo_msgs.msg import DetectionArray
 
 from pose_estimator.utils.detections import (
+    filter_detections_by_num_points,
     get_detection_obb,
     get_top_k_detections_per_class,
 )
@@ -169,7 +171,7 @@ class TinsPoseEstimatorDepthFromOdom(PoseEstimatorPosePubNode):
         self.get_logger().info(f"Object to camera depth: {object_to_camera_depth} m")
 
         best_track_detections = get_top_k_detections_per_class(
-            track_detection_array_msg,
+            filter_detections_by_num_points(track_detection_array_msg, 3),
             {"red_tin": 1, "green_tin": 1, "blue_tin": 1},
         )
         best_detections = {
@@ -181,7 +183,14 @@ class TinsPoseEstimatorDepthFromOdom(PoseEstimatorPosePubNode):
         rvec = np.zeros((3, 1), dtype=np.float32)
 
         for class_name, detection in best_detections.items():
-            _, obb = get_detection_obb(detection)
+            try:
+                _, obb = get_detection_obb(detection)
+            except (ValueError, cv2.error) as error:
+                self.get_logger().warning(f"Skipping invalid {class_name} mask: {error}",
+                                          throttle_duration_sec=5.0)
+                continue
+            if not np.isfinite(obb).all() or cv2.contourArea(obb.astype(np.float32)) <= 0:
+                continue
             centroid = np.mean(obb, axis=0)
             X, Y = backproject_pixel(
                 centroid[0], centroid[1], object_to_camera_depth, self.camera
