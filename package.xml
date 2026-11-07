@@ -8,6 +8,9 @@
   <license>MIT</license>
 
   <!-- 3rd party -->
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>foxglove_msgs</exec_depend>
   <exec_depend>image_transport</exec_depend>
