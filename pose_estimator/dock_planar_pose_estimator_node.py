@@ -8,6 +8,12 @@ Pipeline (``use_stereo_depth: true``):
        normal gives the panel yaw, the inlier centroid gives x and y.
     4. The pose is published with z = 0, roll = 0, pitch = 0.
 
+Pipeline (``use_lidar: true``, overrides ``use_stereo_depth``):
+    1. Lidar points are transformed into the camera optical frame via TF and
+       projected with the pinhole model; points inside the shrunken OBB are kept.
+    2. The kept points are transformed to ``target_frame`` and fitted as in
+       steps 3-4 above. Lidar is sparse, so lower ``min_points`` at range.
+
 Pipeline (``use_stereo_depth: false``):
     1. The 4 OBB corners are matched to the panel corners in
        ``WINDOW_WHITE_PLANE_DICT`` and solved with planar PnP (IPPE).
@@ -38,7 +44,8 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, PointCloud2
+from sensor_msgs_py import point_cloud2
 from tf_transformations import quaternion_matrix
 from yolo_msgs.msg import DetectionArray
 
@@ -158,6 +165,10 @@ class DockPlanarPoseEstimator(Node):
         self.depth_image_topic = self.declare_parameter(
             "input_depth_image_topic", "/asv5/oakd/stereo/image_raw"
         ).value
+        self.use_lidar = bool(self.declare_parameter("use_lidar", False).value)
+        self.lidar_topic = self.declare_parameter(
+            "input_lidar_topic", "/asv5/os0/points"
+        ).value
         self.camera_info_topic = self.declare_parameter(
             "camera_info_topic", "/asv5/oakd/rgb/camera_info"
         ).value
@@ -228,7 +239,27 @@ class DockPlanarPoseEstimator(Node):
             qos_profile_sensor_data,
         )
 
-        if self.use_stereo_depth:
+        if self.use_lidar:
+            self._detections_sub = message_filters.Subscriber(
+                self,
+                DetectionArray,
+                self.detections_topic,
+                qos_profile=qos_profile_sensor_data,
+            )
+            self._lidar_sub = message_filters.Subscriber(
+                self,
+                PointCloud2,
+                self.lidar_topic,
+                qos_profile=qos_profile_sensor_data,
+            )
+            self._time_sync = message_filters.ApproximateTimeSynchronizer(
+                [self._detections_sub, self._lidar_sub],
+                queue_size=10,
+                slop=self.depth_sync_slop,
+            )
+            self._time_sync.registerCallback(self.lidar_detections_callback)
+            source = f"{self.detections_topic} + {self.lidar_topic}"
+        elif self.use_stereo_depth:
             self._detections_sub = message_filters.Subscriber(
                 self,
                 DetectionArray,
@@ -299,6 +330,20 @@ class DockPlanarPoseEstimator(Node):
         if pose is not None:
             self.pose_publisher.publish(pose)
 
+    def lidar_detections_callback(
+        self, detections_msg: DetectionArray, cloud_msg: PointCloud2
+    ):
+        if self.camera_info is None:
+            return
+        detection = self._best_detection(detections_msg)
+        if detection is None:
+            return
+        pose = self._estimate_pose(
+            detection, detections_msg.header, cloud_msg=cloud_msg
+        )
+        if pose is not None:
+            self.pose_publisher.publish(pose)
+
     def _best_detection(self, msg: DetectionArray):
         candidates = [
             detection
@@ -354,8 +399,12 @@ class DockPlanarPoseEstimator(Node):
         camera_points = self._camera_points(detection, depth_img)
         if len(camera_points) < self.min_points:
             return None
+        return self._checked_plane(transform_points(camera_points, transform))
+
+    def _checked_plane(self, points):
+        """Fit a vertical plane and apply the RMSE / inlier-ratio gates."""
         fitted = fit_vertical_plane(
-            transform_points(camera_points, transform),
+            points,
             self.plane_distance_threshold,
             self.max_plane_tilt,
             self.ransac_iterations,
@@ -371,6 +420,48 @@ class DockPlanarPoseEstimator(Node):
             )
             return None
         return centroid, normal
+
+    def _lidar_plane(self, detection, cloud_msg, camera_frame):
+        """Return (centroid, horizontal normal) in target_frame from lidar points."""
+        points = point_cloud2.read_points_numpy(
+            cloud_msg, field_names=("x", "y", "z"), skip_nans=True
+        ).astype(np.float64)
+        if len(points) == 0:
+            return None
+        stamp = Time.from_msg(cloud_msg.header.stamp)
+        timeout = Duration(seconds=0.1)
+        lidar_frame = cloud_msg.header.frame_id
+        to_camera = self.tf_buffer.lookup_transform(
+            camera_frame, lidar_frame, stamp, timeout=timeout
+        )
+        to_target = self.tf_buffer.lookup_transform(
+            self.target_frame, lidar_frame, stamp, timeout=timeout
+        )
+
+        info = self.camera_info
+        shape = (info.height, info.width)
+        fx, fy, cx, cy, _, _ = self._intrinsics(shape)
+        cam = transform_points(points, to_camera)
+        front = (cam[:, 2] >= self.min_depth) & (cam[:, 2] <= self.max_depth)
+        points, cam = points[front], cam[front]
+        u = np.round(fx * cam[:, 0] / cam[:, 2] + cx).astype(np.int64)
+        v = np.round(fy * cam[:, 1] / cam[:, 2] + cy).astype(np.int64)
+        in_image = (u >= 0) & (u < shape[1]) & (v >= 0) & (v < shape[0])
+        points, u, v = points[in_image], u[in_image], v[in_image]
+
+        bbox = detection.bbox
+        mask = obb_mask(
+            shape,
+            (bbox.center.position.x, bbox.center.position.y),
+            (bbox.size.x, bbox.size.y),
+            bbox.center.theta,
+            self.obb_shrink,
+        )
+        points = points[mask[v, u]]
+        if len(points) < self.min_points:
+            self.get_logger().debug(f"Only {len(points)} lidar points in OBB")
+            return None
+        return self._checked_plane(transform_points(points, to_target))
 
     def _pnp_plane(self, detection, transform):
         """Return (centroid, horizontal normal) in target_frame from planar PnP."""
@@ -416,7 +507,9 @@ class DockPlanarPoseEstimator(Node):
             return None
         return ends[0], normal_xy / normal_xy_norm
 
-    def _estimate_pose(self, detection, header, depth_img=None) -> PoseStamped | None:
+    def _estimate_pose(
+        self, detection, header, depth_img=None, cloud_msg=None
+    ) -> PoseStamped | None:
         try:
             camera_frame = header.frame_id or self.camera_info.header.frame_id
             transform = self.tf_buffer.lookup_transform(
@@ -427,7 +520,9 @@ class DockPlanarPoseEstimator(Node):
             )
             camera_origin = transform_points(np.zeros((1, 3)), transform)[0]
 
-            if depth_img is None:
+            if cloud_msg is not None:
+                fitted = self._lidar_plane(detection, cloud_msg, camera_frame)
+            elif depth_img is None:
                 fitted = self._pnp_plane(detection, transform)
             else:
                 fitted = self._depth_plane(detection, depth_img, transform)

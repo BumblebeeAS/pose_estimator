@@ -57,7 +57,8 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
         )
 
         self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        # Vehicle attitude comes from synchronized odometry; only extrinsics use TF.
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self, static_only=True)
         self.tf_timeout_sec = 1.0
 
         # Get base_link frame from odom_ned

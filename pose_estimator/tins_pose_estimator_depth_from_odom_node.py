@@ -19,6 +19,7 @@ from pose_estimator.utils.detections import (
 )
 from pose_estimator.utils.pose_estimator import backproject_pixel
 from pose_estimator.utils.pose_estimator_node import PoseEstimatorPosePubNode
+from pose_estimator.utils.odometry_transforms import add_odometry_transform
 
 
 class TinsPoseEstimatorDepthFromOdom(PoseEstimatorPosePubNode):
@@ -67,7 +68,11 @@ class TinsPoseEstimatorDepthFromOdom(PoseEstimatorPosePubNode):
         self.time_synchronizer.registerCallback(self.detections_callback)
 
         self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=30))
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        # Clustered anchors and camera extrinsics are static. Vehicle motion is
+        # supplied by odometry rather than by the global dynamic TF stream.
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self, static_only=True)
+        odom_subscription.registerCallback(
+            lambda msg: add_odometry_transform(self.tf_buffer, msg))
 
         self.toggle_frame_service = self.create_service(
             TrashToggleFrame,
