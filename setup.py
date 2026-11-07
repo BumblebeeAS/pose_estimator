@@ -52,6 +52,8 @@ setup(
             "dock_planar_pose_estimator_node = pose_estimator.dock_planar_pose_estimator_node:main",
             "dock_pnp_pose_estimator_node = pose_estimator.dock_pnp_pose_estimator_node:main",
             "dock_lidar_pose_estimator_node = pose_estimator.dock_lidar_pose_estimator_node:main",
+            "buoy_pose_estimator_node = pose_estimator.buoy_pose_estimator_node:main",
+            "buoy_gate_manager_node = pose_estimator.buoy_gate_manager_node:main",
         ],
     },
 )
