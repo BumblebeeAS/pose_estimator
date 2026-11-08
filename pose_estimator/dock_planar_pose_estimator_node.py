@@ -20,11 +20,6 @@ Pipeline (``use_stereo_depth: false``):
     2. The panel centre and normal are transformed to ``target_frame`` and
        published as in step 4 above.
 
-Lifecycle: configure creates the publisher, activate subscribes to the
-detections / depth / camera info (estimation only runs while active),
-deactivate unsubscribes. Set ``activate_on_start`` to activate without a
-lifecycle manager.
-
 A single plane fit over the ROI is used instead of per-pixel (k-NN) normals:
 stereo depth is too noisy for local normals, while a fit over hundreds of
 points averages that noise out. Depth noise still grows ~Z^2, so yaw quality
@@ -46,7 +41,7 @@ import tf2_ros
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped
 from rclpy.duration import Duration
-from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
@@ -158,7 +153,7 @@ def order_corners(corners: np.ndarray) -> np.ndarray:
     return corners[[np.argmin(s), np.argmin(d), np.argmax(s), np.argmax(d)]]
 
 
-class DockPlanarPoseEstimator(LifecycleNode):
+class DockPlanarPoseEstimator(Node):
     """Estimate the dock panel pose from the YOLO OBB with depth or PnP."""
 
     def __init__(self):
@@ -220,7 +215,6 @@ class DockPlanarPoseEstimator(LifecycleNode):
         self.ransac_iterations = int(
             self.declare_parameter("ransac_iterations", 200).value
         )
-        self.declare_parameter("activate_on_start", False)
         if not 0.0 <= self.min_confidence <= 1.0:
             raise ValueError("min_confidence must be in the range [0, 1]")
         if not 0.0 < self.obb_shrink <= 1.0:
@@ -235,21 +229,9 @@ class DockPlanarPoseEstimator(LifecycleNode):
         self.cv_bridge = CvBridge()
         self.tf_buffer = tf2_ros.Buffer(node=self)
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        self.pose_publisher = None
-        self.camera_info_subscription = None
-        self._detections_sub = None
-        self._depth_sub = None
-        self._lidar_sub = None
-        self._time_sync = None
-
-    def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
-        self.pose_publisher = self.create_lifecycle_publisher(
+        self.pose_publisher = self.create_publisher(
             PoseStamped, self.pose_topic, qos_profile_sensor_data
         )
-        self.get_logger().info("Configured")
-        return super().on_configure(state)
-
-    def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         self.camera_info_subscription = self.create_subscription(
             CameraInfo,
             self.camera_info_topic,
@@ -307,43 +289,8 @@ class DockPlanarPoseEstimator(LifecycleNode):
             source = f"{self.detections_topic} (PnP)"
 
         self.get_logger().info(
-            f"Activated, publishing dock planar pose on {self.pose_topic} from {source}"
+            f"Publishing dock planar pose on {self.pose_topic} from {source}"
         )
-        return super().on_activate(state)
-
-    def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        self._destroy_subscriptions()
-        self.get_logger().info("Deactivated")
-        return super().on_deactivate(state)
-
-    def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
-        self._destroy_publisher()
-        self.get_logger().info("Cleaned up")
-        return super().on_cleanup(state)
-
-    def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
-        # Shutdown can be entered from any primary state, so tear down
-        # idempotently.
-        self._destroy_subscriptions()
-        self._destroy_publisher()
-        return TransitionCallbackReturn.SUCCESS
-
-    def _destroy_subscriptions(self):
-        self._time_sync = None
-        self.camera_info = None
-        for name in (
-            "camera_info_subscription", "_detections_sub", "_depth_sub", "_lidar_sub"
-        ):
-            sub = getattr(self, name)
-            if sub is not None:
-                # message_filters.Subscriber wraps the rclpy subscription in .sub
-                self.destroy_subscription(getattr(sub, "sub", sub))
-                setattr(self, name, None)
-
-    def _destroy_publisher(self):
-        if self.pose_publisher is not None:
-            self.destroy_publisher(self.pose_publisher)
-            self.pose_publisher = None
 
     def _camera_info_callback(self, message: CameraInfo) -> None:
         self.camera_info = message
@@ -608,9 +555,6 @@ class DockPlanarPoseEstimator(LifecycleNode):
 def main(args=None):
     rclpy.init(args=args)
     node = DockPlanarPoseEstimator()
-    node.trigger_configure()
-    if node.get_parameter("activate_on_start").get_parameter_value().bool_value:
-        node.trigger_activate()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
