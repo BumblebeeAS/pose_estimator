@@ -179,12 +179,7 @@ class TrackManager:
 
     @staticmethod
     def _band_power(magnitudes: np.ndarray, band_mask: np.ndarray) -> float:
-        """Total magnitude held inside the target frequency band.
-
-        Root of the summed squared bins, i.e. an energy measure. Unlike a single peak
-        bin this is invariant to where the flash frequency falls relative to the FFT
-        bin centres, so it reads the same for a flasher anywhere in the band.
-        """
+        """Combine target-band energy so flashes between FFT bins retain their strength."""
         return float(np.sqrt(np.square(magnitudes[band_mask]).sum()))
 
     def classify_tracks(self):

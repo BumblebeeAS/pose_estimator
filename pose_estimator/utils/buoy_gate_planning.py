@@ -33,7 +33,6 @@ class GoalCandidate:
     distance: float = float("inf")
     is_valid: bool = False
     reject_reason: str = "UNEVALUATED"
-    # Helpful for tuning max_gate_width
     gate_width: Optional[float] = None
 
 
@@ -55,16 +54,7 @@ class GatePlanning:
     def _compute_forward_vector(
         self, vehicle_pos: np.ndarray, previous_pos: Optional[np.ndarray]
     ) -> Tuple[Optional[np.ndarray], str]:
-        """Forward unit vector in world_frame_id via the 3-tier frame-intrinsic hierarchy.
-
-        Args:
-            vehicle_pos: Current vehicle position in world_frame_id.
-            previous_pos: Position of the preceding query, used for the trajectory tier.
-                Pass None to skip that tier.
-
-        Returns:
-            The 2D forward unit vector and its source, or (None, "UNAVAILABLE").
-        """
+        """Return the XY unit heading and source: course axis, query motion, or drone TF."""
         entry_pos, exit_pos = self._get_milestone_centroids()
         course_axis = (exit_pos[:2] - entry_pos[:2]
                        if entry_pos is not None and exit_pos is not None else None)
@@ -75,7 +65,6 @@ class GatePlanning:
                 if length > 0.1:
                     return direction / length, source
 
-        # Priority 3: fall back to drone base_link heading in world_frame_id
         try:
             base_transform = self.tf_buffer.lookup_transform(
                 self.world_frame_id,
@@ -93,12 +82,7 @@ class GatePlanning:
         return np.array([math.cos(drone_yaw), math.sin(drone_yaw)]), "DRONE_HEADING"
 
     def _generate_candidates(self, vehicle_pos: np.ndarray) -> List[GoalCandidate]:
-        """Stateless candidate generation from the current track set.
-
-        Greedily pairs red/green tracks into gates within max_gate_width, offsets any
-        unpaired buoy to the side the vehicle must keep it on, and appends the Exit
-        buoy. The Entry buoy is NEVER a candidate.
-        """
+        """Pair nearby red/green tracks, offset unpaired buoys, and include the exit."""
         red_tracks = [
             t
             for t in self.track_manager.tracks.values()
@@ -116,7 +100,6 @@ class GatePlanning:
         paired_red: Set[int] = set()
         paired_green: Set[int] = set()
 
-        # Greedy pairing within max_gate_width
         pairs = []
         for rt in red_tracks:
             for gt in green_tracks:
@@ -154,7 +137,6 @@ class GatePlanning:
                     goal_type=GOAL_TYPE_SINGULAR_BUOY, position=position, track_ids=(track.track_id,),
                 ))
 
-        # Include Exit buoy if available (Entry is NEVER included)
         for tid, t in self.track_manager.tracks.items():
             if (
                 t.published_state == DetectedBuoyColor.SOLID_BLUE
@@ -176,11 +158,7 @@ class GatePlanning:
         vehicle_pos: np.ndarray,
         v_forward: Optional[np.ndarray],
     ) -> None:
-        """Annotate each candidate in place with its distance and validity.
-
-        A candidate is rejected when it sits behind the vehicle along v_forward or is
-        already within waypoint_pass_tol, i.e. effectively reached.
-        """
+        """Mark candidates invalid when heading is missing, reached, or behind the vehicle."""
         for cand in candidates:
             d_vec = cand.position[:2] - vehicle_pos[:2]
             cand.distance = float(np.linalg.norm(d_vec))
@@ -200,15 +178,7 @@ class GatePlanning:
     def _evaluate_candidates(
         self, vehicle_pos: np.ndarray, previous_pos: Optional[np.ndarray]
     ) -> Tuple[Optional[np.ndarray], str, List[GoalCandidate]]:
-        """Single entry point for goal reasoning, shared by the service and markers.
-
-        Both _cb_extract_goal and the marker visualisation go through here so they can
-        never disagree about which candidates exist or which one wins.
-
-        Returns:
-            The forward unit vector, the tier tag it came from, and every candidate
-            sorted valid-first then nearest-first.
-        """
+        """Return heading, source, and candidates sorted valid-first then nearest-first."""
         v_forward, forward_source = self._compute_forward_vector(
             vehicle_pos, previous_pos
         )
@@ -221,5 +191,5 @@ class GatePlanning:
     def _select_best_candidate(
         candidates: List[GoalCandidate],
     ) -> Optional[GoalCandidate]:
-        """Distance gating: the nearest valid candidate, or None if there is none."""
+        """Return the first valid candidate from the sorted list."""
         return next((candidate for candidate in candidates if candidate.is_valid), None)

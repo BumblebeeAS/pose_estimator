@@ -82,9 +82,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             0.02, self._drain_observations, callback_group=self.main_cb_group
         )
 
-        # Lifecycle and tracking state. The two most recent query positions are kept so
-        # the visualisation can reproduce the exact forward vector of the last service
-        # call, which needs the query before it for the trajectory heading tier.
+        # Retain both query positions so markers can reproduce trajectory heading.
         self.enable: bool = param("enable_on_start", False)
         self.last_query_pos: Optional[np.ndarray] = None
         self.prev_query_pos: Optional[np.ndarray] = None
@@ -157,7 +155,6 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             ToLL, self.to_ll_service_name, callback_group=self.client_cb_group
         )
 
-        # Background FFT/Pruning timer (Layer 2)
         self.fft_timer = self.create_timer(
             self.fft_timer_period, self._on_fft_timer, callback_group=self.main_cb_group
         )
@@ -204,7 +201,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             self._reported_drops = self.observations.dropped
 
     def _on_fft_timer(self):
-        """Layer 2: Background association, FFT classification, pruning, deduplication, and visualization."""
+        """Update tracks, classify colors, merge singletons, and publish markers."""
         if not self.enable:
             return
 
@@ -226,7 +223,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
     def _cb_set_state(
         self, req: SetGateManagerState.Request, res: SetGateManagerState.Response
     ) -> SetGateManagerState.Response:
-        """Layer 3: Enable/Disable lifecycle and temporal window adjustment."""
+        """Enable or freeze collection and set the temporal window."""
         if not np.isfinite(req.temporal_window):
             res.success = False
             res.message = "Temporal window must be finite (nonpositive means unlimited)"
@@ -262,7 +259,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
     def _cb_reset(
         self, req: Trigger.Request, res: Trigger.Response
     ) -> Trigger.Response:
-        """Layer 3: Trigger service to clear all tracks."""
+        """Clear pending observations, tracks, and query history."""
         self.observations.clear()
         self.track_manager.clear_all_tracks()
         self.last_query_pos = None
@@ -348,7 +345,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
     def _cb_extract_goal(
         self, req: ExtractLocalGoal.Request, res: ExtractLocalGoal.Response
     ) -> ExtractLocalGoal.Response:
-        """Layer 3: Instantaneous local goal extraction with TF2 frame normalization and geodetic bridge."""
+        """Normalize the query pose and return the nearest valid forward goal."""
         vehicle_pos = None
 
         if req.input_is_latlon:
@@ -383,15 +380,12 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
                 ]
             )
 
-        # Forward heading, candidate generation and in-front filtering all happen inside
-        # _evaluate_candidates, which the marker visualisation calls with the same
-        # arguments so RViz always shows exactly what this service reasoned over.
+        # Share candidate evaluation with marker rendering.
         _, forward_source, candidates = self._evaluate_candidates(
             vehicle_pos, self.last_query_pos
         )
 
-        # Roll the query history forward only after evaluating: the trajectory heading
-        # tier above needs the position of the preceding query, not this one.
+        # Evaluate against the preceding query before advancing history.
         self.prev_query_pos = self.last_query_pos
         self.last_query_pos = vehicle_pos.copy()
 

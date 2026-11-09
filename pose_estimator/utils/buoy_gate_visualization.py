@@ -51,16 +51,7 @@ class GateVisualization:
     def _get_visualisation_query_pos(
         self,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Reference position the candidate visualisation is generated from.
-
-        Prefers the vehicle position of the most recent extract-goal call, together
-        with the one before it, so the markers reproduce that call's reasoning exactly.
-        Before any call has arrived, falls back to the drone's own position so the
-        candidate set is still observable during overfly.
-
-        Returns:
-            The query position and preceding query position (None when unavailable).
-        """
+        """Use the last two query positions, or the drone position before the first query."""
         if self.last_query_pos is not None:
             return self.last_query_pos, self.prev_query_pos
 

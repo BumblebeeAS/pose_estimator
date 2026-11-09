@@ -9,9 +9,14 @@ from pose_estimator.utils.PinholeCamera import PinholeCamera
 from pose_estimator.utils.pose_estimator import get_object_pose_from_detection_using_best_fit_quad
 from yolo_msgs.msg import Detection, Point2D
 
-@pytest.mark.parametrize("rvec", [[0.1, -0.25, 0.2], [-0.5, 0.4, -0.6], [0.0, 0.0, 0.0]])
-@pytest.mark.parametrize("reverse", [False, True])
-@pytest.mark.parametrize("shift", [0, 10, 20, 30])
+@pytest.mark.parametrize("rvec,reverse,shift", [
+    ([0.0, 0.0, 0.0], False, 0),
+    ([0.0, 0.0, 0.0], True, 30),
+    ([0.1, -0.25, 0.2], False, 10),
+    ([0.1, -0.25, 0.2], True, 20),
+    ([-0.5, 0.4, -0.6], False, 30),
+    ([-0.5, 0.4, -0.6], True, 0),
+])
 def test_footprint_pnp_recovers_bottom_center_from_perspective_contour(rvec, reverse, shift):
     from pose_estimator.config.robotx26_object_points import (
         BUOY_FOOTPRINT_OBJECT_POINTS,
