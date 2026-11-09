@@ -1,14 +1,16 @@
 import os
 from glob import glob
 
-from setuptools import setup
+from setuptools import find_namespace_packages, setup
 
 package_name = "pose_estimator"
 
 setup(
     name=package_name,
     version="0.0.0",
-    packages=[package_name],
+    packages=find_namespace_packages(
+        include=[package_name, package_name + ".*"], exclude=["*.__pycache__"],
+    ),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
@@ -52,6 +54,8 @@ setup(
             "dock_planar_pose_estimator_node = pose_estimator.dock_planar_pose_estimator_node:main",
             "dock_pnp_pose_estimator_node = pose_estimator.dock_pnp_pose_estimator_node:main",
             "dock_lidar_pose_estimator_node = pose_estimator.dock_lidar_pose_estimator_node:main",
+            "buoy_pose_estimator_node = pose_estimator.buoy_pose_estimator_node:main",
+            "buoy_gate_manager_node = pose_estimator.buoy_gate_manager_node:main",
         ],
     },
 )

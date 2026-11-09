@@ -20,6 +20,26 @@ The helipad estimator finds the pad's center from its three concentric circles. 
 
 The detection labels run from `circle_1` on the outside to `circle_3` on the inside. The circles cannot tell us which way the pad is facing, so the published orientation is aligned with `odom_ned`.
 
+### Buoy poses and gate tracking
+
+`buoy_pose_estimator_node` consumes classified `yolo_msgs/DetectionArray` messages on `buoy/classified_detections` and rectified CameraInfo on `rect/camera_info`. Accepted labels are `buoy_red`, `buoy_green`, `buoy_blue`, `buoy_off`, and `buoy_unknown`. Classification runs upstream; this node does not load a classifier or subscribe to images. Use the separately configured classifier in `yolo_ros_trt` to produce these labels, or provide an equivalent detection stream.
+
+Every matching detection is processed, including multiple buoys of the same color. Pose estimation reuses `get_object_pose_from_detection_using_best_fit_quad()` for quad fitting, PnP, and refinement. The modeled bottom footprint is a centered 0.4318 m square, excluding floats, from the 17-inch panel bottom edge in the [official RoboBuoy drawing](https://robonation.gitbook.io/robotx-2026-team-handbook/robotx-2026-or-task-build-guides/robobuoy-build-guide#robobuoy-side-panels). Its points are in `config/robotx26_object_points.py`. This assumes a near top-down body silhouette whose fitted corners represent that footprint; oblique views or masks containing floats can bias range. The shared quad helper falls back to an oriented bounding rectangle if fitting raises an error. There are no image-border or quad-coverage rejection thresholds.
+
+Outputs are `buoy/detections` (`bb_robotx_msgs/BuoyDetectionArray`), `buoy/poses` (`geometry_msgs/PoseArray`), and `buoy/pose_labels` (`visualization_msgs/MarkerArray`). All poses and markers retain the source camera frame and detection timestamp, and positions refer to the bottom footprint center. Orientation is identity because unique yaw is unobserved. Color values are 0 off/BLACK, 1 red, 2 green, 3 blue, and 255 unknown. Failed estimates and invalid, behind-camera, or out-of-range positions are skipped; `max_range` defaults to 100 m. Empty frames publish empty pose arrays and a stamped marker clear. Text markers have per-frame IDs, matching colors, 0.15 m height, and a one-second lifetime.
+
+Configure `input_detections_topic`, `camera_info_topic`, `output_detections_topic`, `output_poses_topic`, and `output_pose_labels_topic` as needed. Common-frame conversion belongs downstream. When using `buoy_gate_manager_node`, set its `buoy_detections_topic` to the estimator's actual output topic and provide the TF tree needed for the manager's world-frame conversion. The manager owns observation-time transforms, tracking, temporal beacon classification, and gate queries.
+
+### Buoy gate manager
+
+`buoy_gate_manager_node` separates ROS services from observation buffering, tracking, goal planning, and marker rendering in `pose_estimator/buoy/`. Collection starts disabled. Enable or freeze it with `set_gate_manager_state`; freezing processes ready observations, logs a `BUOY_SEARCH_FROZEN` track summary, and clears pending input. `reset_tracks` clears tracks and query history.
+
+Observations use their pose header, falling back to the array header. The manager waits for TF at the source timestamp (`tf_wait_timeout`: 0.25 s, `max_pending_observations`: 1000), dropping invalid, expired, or overflowed input. Set `input_odom_topic` to build motion transforms from odometry and listen only to static TF; leave it empty to use the normal TF listener. Association uses XY distance while retaining measured height. Observations update the nearest track within `max_association_radius`; unmatched samples accumulate for DBSCAN.
+
+Color 255 contributes position without OFF evidence. Classification requires `required_density` known-color coverage and splits sightings at `max_color_gap` (default 0.5 s). Each segment must span `min_flash_cycles` (default two) and have enough resampled points for filtering. Duration-weighted FFT evidence combines qualifying segments without interpolating across visibility gaps. Insufficient evidence retains the previous state. Blue entry and exit tracks survive timeouts and merge duplicate histories in timestamp order.
+
+Goal extraction and markers share candidate evaluation. Heading comes from the entry-to-exit axis, query motion, or drone heading TF; unavailable heading rejects all candidates. Markers show tracks, candidate labels, gate links, and the selected goal. Geodetic discovery and response waiting share `geodetic_timeout` (default 3 s), with conversions between `NavSatFix` and the bridge's `GeoPoint` messages.
+
 ## RoboSub 2025
 
 ### Slalom
