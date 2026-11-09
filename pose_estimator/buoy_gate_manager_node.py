@@ -13,7 +13,7 @@ import tf2_ros
 import tf_transformations
 from bb_robotx_msgs.msg import BuoyDetectionArray
 from bb_robotx_msgs.srv import ExtractLocalGoal, GetEntry, GetExit, SetGateManagerState
-from bb_localization.pose_to_navsat import Px4GeographicReference, pose_to_fix
+from pose_estimator.buoy.geographic import Px4GeographicReference, pose_to_fix
 from geographic_msgs.msg import GeoPath, GeoPoseStamped
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
