@@ -28,10 +28,10 @@ from sensor_msgs.msg import NavSatFix
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import MarkerArray
 
-from pose_estimator.utils.buoy_tracking import TrackManager, DetectedBuoyColor
-from pose_estimator.utils.buoy_observations import ObservationBuffer
-from pose_estimator.utils.buoy_gate_planning import GatePlanning, GOAL_TYPE_INVALID
-from pose_estimator.utils.buoy_gate_visualization import GateVisualization
+from pose_estimator.buoy.tracking import TrackManager, DetectedBuoyColor
+from pose_estimator.buoy.observations import ObservationBuffer
+from pose_estimator.buoy.planning import GatePlanning, GOAL_TYPE_INVALID
+from pose_estimator.buoy.visualization import GateVisualization
 from pose_estimator.utils.odometry_transforms import add_odometry_transform
 
 

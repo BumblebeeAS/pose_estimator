@@ -8,8 +8,8 @@ from geometry_msgs.msg import Point, Vector3
 from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 
-from pose_estimator.utils.buoy_tracking import DetectedBuoyColor
-from pose_estimator.utils.buoy_gate_planning import (
+from pose_estimator.buoy.tracking import DetectedBuoyColor
+from pose_estimator.buoy.planning import (
     GOAL_TYPE_GATE_PAIR, GOAL_TYPE_SINGULAR_BUOY, GOAL_TYPE_EXIT_BUOY,
 )
 

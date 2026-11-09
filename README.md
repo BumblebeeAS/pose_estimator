@@ -32,7 +32,7 @@ Configure `input_detections_topic`, `camera_info_topic`, `output_detections_topi
 
 ### Buoy gate manager
 
-`buoy_gate_manager_node` separates ROS services from observation buffering, tracking, goal planning, and marker rendering in `utils/buoy_*.py`. Collection starts disabled. Enable or freeze it with `set_gate_manager_state`; freezing processes ready observations, logs a `BUOY_SEARCH_FROZEN` track summary, and clears pending input. `reset_tracks` clears tracks and query history.
+`buoy_gate_manager_node` separates ROS services from observation buffering, tracking, goal planning, and marker rendering in `pose_estimator/buoy/`. Collection starts disabled. Enable or freeze it with `set_gate_manager_state`; freezing processes ready observations, logs a `BUOY_SEARCH_FROZEN` track summary, and clears pending input. `reset_tracks` clears tracks and query history.
 
 Observations use their pose header, falling back to the array header. The manager waits for TF at the source timestamp (`tf_wait_timeout`: 0.25 s, `max_pending_observations`: 1000), dropping invalid, expired, or overflowed input. Set `input_odom_topic` to build motion transforms from odometry and listen only to static TF; leave it empty to use the normal TF listener. Association uses XY distance while retaining measured height. Observations update the nearest track within `max_association_radius`; unmatched samples accumulate for DBSCAN.
 

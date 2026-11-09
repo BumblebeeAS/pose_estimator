@@ -10,8 +10,8 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Header
 from tf2_ros import TransformException
 
-from pose_estimator.utils.buoy_observations import ObservationBuffer
-from pose_estimator.utils.buoy_tracking import BuoyTrack, DetectedBuoyColor, TrackManager
+from pose_estimator.buoy.observations import ObservationBuffer
+from pose_estimator.buoy.tracking import BuoyTrack, DetectedBuoyColor, TrackManager
 
 
 def message(color=BuoyDetection.RED, stamp=42, frame="camera", position=(1., 2., 3.)):
@@ -108,7 +108,7 @@ def test_singleton_tracks_survive_timeout_and_keep_aligned_history():
 
 
 def planner_with_tracks(states):
-    from pose_estimator.utils.buoy_gate_planning import GatePlanning
+    from pose_estimator.buoy.planning import GatePlanning
     planner = GatePlanning()
     planner.track_manager = TrackManager(logger=Mock())
     planner.max_gate_width = 3.
@@ -123,7 +123,7 @@ def planner_with_tracks(states):
 
 
 def test_gate_selection_uses_course_axis_and_nearest_valid_pair():
-    from pose_estimator.utils.buoy_gate_planning import GOAL_TYPE_GATE_PAIR
+    from pose_estimator.buoy.planning import GOAL_TYPE_GATE_PAIR
     planner = planner_with_tracks([
         (DetectedBuoyColor.FLASHING_BLUE, [0, 0, 0]),
         (DetectedBuoyColor.SOLID_BLUE, [20, 0, 0]),
@@ -149,7 +149,7 @@ def test_single_red_and_green_standoffs_use_opposite_sides():
 
 
 def test_candidate_filter_rejects_reached_and_behind_goals():
-    from pose_estimator.utils.buoy_gate_planning import GoalCandidate
+    from pose_estimator.buoy.planning import GoalCandidate
     planner = planner_with_tracks([])
     candidates = [GoalCandidate("test", np.array(p)) for p in ([.1, 0, 0], [-2, 0, 0], [2, 0, 0])]
     planner._filter_candidates(candidates, np.zeros(3), np.array([1., 0.]))

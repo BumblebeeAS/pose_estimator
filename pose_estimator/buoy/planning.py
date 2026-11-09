@@ -9,7 +9,7 @@ import rclpy
 from geometry_msgs.msg import Quaternion
 from tf2_ros import TransformException
 
-from pose_estimator.utils.buoy_tracking import DetectedBuoyColor
+from pose_estimator.buoy.tracking import DetectedBuoyColor
 
 GOAL_TYPE_GATE_PAIR = "GATE_PAIR"
 GOAL_TYPE_SINGULAR_BUOY = "SINGULAR_BUOY"
