@@ -4,7 +4,6 @@
 from collections import Counter
 import json
 import time
-from threading import Event
 from typing import Optional
 
 import numpy as np
@@ -14,16 +13,18 @@ import tf2_ros
 import tf_transformations
 from bb_robotx_msgs.msg import BuoyDetectionArray
 from bb_robotx_msgs.srv import ExtractLocalGoal, GetEntry, GetExit, SetGateManagerState
-from geometry_msgs.msg import Point, PoseStamped
+from pose_estimator.buoy.geographic import Px4GeographicReference, pose_to_fix
+from geographic_msgs.msg import GeoPath, GeoPoseStamped
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.clock import ClockType
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data,
+)
 from rclpy.time import Time
-from robot_localization.srv import FromLL, ToLL
 from sensor_msgs.msg import NavSatFix
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import MarkerArray
@@ -34,13 +35,19 @@ from pose_estimator.buoy.planning import GatePlanning, GOAL_TYPE_INVALID
 from pose_estimator.buoy.visualization import GateVisualization
 from pose_estimator.utils.odometry_transforms import add_odometry_transform
 
+# Safe Passage path for the ASV: best effort over the lossy link, volatile so only a live path counts.
+PATH_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST, depth=1,
+    reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE,
+)
 
-class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
+
+class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReference, Node):
     def __init__(self):
         super().__init__("buoy_gate_manager_node")
 
-        self.main_cb_group = MutuallyExclusiveCallbackGroup()
-        self.client_cb_group = MutuallyExclusiveCallbackGroup()
+        # Reference updates, freeze/reset and publication must not overlap.
+        self.main_cb_group = self.default_callback_group
 
         def param(name, default):
             return self.declare_parameter(name, default).value
@@ -49,15 +56,20 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
         self.marker_topic = param("marker_topic", "gate_manager_markers")
         tf_wait_timeout = param("tf_wait_timeout", 0.25)
         max_pending = param("max_pending_observations", 1000)
-        self.from_ll_service_name = param("from_ll_service", "/fromLL")
-        self.to_ll_service_name = param("to_ll_service", "/toLL")
-        self.geodetic_timeout = param("geodetic_timeout", 3.0)
-        if not np.isfinite(self.geodetic_timeout) or self.geodetic_timeout <= 0:
-            raise ValueError("Geodetic timeout must be finite and positive")
         self.world_frame_id = param("world_frame_id", "map")
+        self.local_axes = param("local_axes", "enu")
+        if self.local_axes not in ("ned", "enu"):
+            raise ValueError("local_axes must be ned or enu")
+        self.reference_frame_id = param("reference_frame_id", "odom_enu")
+        self.setup_geographic_reference(
+            param("reference_topic", "/uav/home_lat_lon"),
+            param("global_position_topic", "/fmu/out/vehicle_global_position"),
+        )
         self.base_link_frame_id = param("base_link_frame_id", "base_link")
         self.fft_timer_period = param("fft_timer_period", 0.5)
         self.max_gate_width = param("max_gate_width", 1.0)
+        # Safe Passage path standoff for unpaired buoys. Keep above the ASV's sample_radius.
+        self.standoff_distance = param("standoff_distance", 1.5)
         self.vehicle_encasing_radius = param("vehicle_encasing_radius", 0.8)
         self.waypoint_pass_tol = param("waypoint_pass_tol", 1.0)
         self.visualize_candidates = param("visualize_candidates", True)
@@ -94,7 +106,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             required_density=param("required_density", 0.8),
             butterworth_cutoff_freq=param("butterworth_cutoff_freq", 3.0),
             butterworth_order=param("butterworth_order", 4),
-            target_freq=param("target_freq", 1.0),
+            target_freq=param("target_freq", 0.5),  # handbook: 1 s on, 1 s off
             target_freq_tol=param("target_freq_tol", 0.2),
             duty_cycle_min=param("duty_cycle_min", 0.1),
             duty_cycle_max=param("duty_cycle_max", 0.85),
@@ -114,6 +126,13 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             callback_group=self.main_cb_group,
         )
         self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
+
+        # Safe Passage path: built when frozen, served only while frozen
+        self._path_msg: Optional[GeoPath] = None
+        self.path_pub = self.create_publisher(GeoPath, param("path_topic", "safe_passage/path"), PATH_QOS)
+        self.path_timer = self.create_timer(
+            param("path_publish_period", 1.0), self._publish_path, callback_group=self.main_cb_group
+        )
 
         # Service servers
         self.srv_set_state = self.create_service(
@@ -145,14 +164,6 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             param("get_exit_service", "get_exit"),
             self._cb_get_exit,
             callback_group=self.main_cb_group,
-        )
-
-        # Geodetic bridge clients
-        self.from_ll_client = self.create_client(
-            FromLL, self.from_ll_service_name, callback_group=self.client_cb_group
-        )
-        self.to_ll_client = self.create_client(
-            ToLL, self.to_ll_service_name, callback_group=self.client_cb_group
         )
 
         self.fft_timer = self.create_timer(
@@ -248,11 +259,17 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
                 self.get_logger().info("BUOY_SEARCH_FROZEN " + json.dumps(tracks))
             self.observations.clear()
             self.track_manager.detection_buffer.clear()
+            if self.enable:
+                self._path_msg = self._build_path_msg()
+        else:
+            self._path_msg = None  # collecting again: stop serving before the tracks change
         self.enable = req.enable
         self.track_manager.temporal_window = req.temporal_window
         res.success = True
         state_str = "ENABLED" if self.enable else "FROZEN (DISABLED)"
         res.message = f"Gate manager state set to {state_str}, temporal_window={req.temporal_window}s."
+        if not self.enable and self._path_msg is None:
+            res.message += " No geographic path available; see manager logs."
         self.get_logger().info(res.message)
         return res
 
@@ -262,6 +279,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
         """Clear pending observations, tracks, and query history."""
         self.observations.clear()
         self.track_manager.clear_all_tracks()
+        self._path_msg = None
         self.last_query_pos = None
         self.prev_query_pos = None
         res.success = True
@@ -269,48 +287,74 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
         self.get_logger().info(res.message)
         return res
 
-    def _call_geodetic(self, client, request, service_name):
-        """Bound service discovery and response waiting by one monotonic deadline."""
-        deadline = time.monotonic() + self.geodetic_timeout
-        if not client.wait_for_service(timeout_sec=self.geodetic_timeout):
-            self.get_logger().error(f"Service {service_name} unavailable.")
-            return None
-        future = client.call_async(request)
-        completed = Event()
-        future.add_done_callback(lambda _: completed.set())
-        if not completed.wait(max(0.0, deadline - time.monotonic())):
-            future.cancel()
-            self.get_logger().error(f"Service {service_name} timed out.")
-            return None
-        try:
-            return future.result()
-        except Exception as error:
-            self.get_logger().error(f"Service {service_name} failed: {error}")
-            return None
+    def _reference(self, message):
+        # The reference publisher labels its origin odom_enu even for NED users.
+        # Both local views share that origin; local_axes controls the axis swap.
+        if (message.header.frame_id != self.reference_frame_id
+                or not (message.header.stamp.sec or message.header.stamp.nanosec)):
+            self.reference = self.converter = None
+            self.get_logger().warning("Invalid PX4 reference frame or timestamp", throttle_duration_sec=5.0)
+            return
+        super()._reference(message)
+
+    def _geographic_ready(self):
+        if self.converter is None or self.altitude_offset is None:
+            self.get_logger().warning("Waiting for PX4 geographic reference and ellipsoid altitude correction",
+                                      throttle_duration_sec=5.0)
+            return False
+        return True
 
     def _convert_from_ll(self, latlon_msg: NavSatFix) -> Optional[np.ndarray]:
-        request = FromLL.Request()
-        request.ll_point.latitude = latlon_msg.latitude
-        request.ll_point.longitude = latlon_msg.longitude
-        request.ll_point.altitude = latlon_msg.altitude
-        response = self._call_geodetic(self.from_ll_client, request, self.from_ll_service_name)
-        if response is not None:
-            p = response.map_point
-            return np.array([p.x, p.y, p.z])
-        return None
+        if not self._geographic_ready():
+            return None
+        latitude, longitude, altitude = latlon_msg.latitude, latlon_msg.longitude, latlon_msg.altitude
+        if (not np.isfinite([latitude, longitude, altitude]).all()
+                or not -90 <= latitude <= 90 or not -180 <= longitude <= 180):
+            return None
+        point = self.converter.forward(latitude, longitude, altitude)
+        position = ([point.y, point.x, -point.z] if self.local_axes == "ned"
+                    else [point.x, point.y, point.z])
+        return np.array(position)
 
     def _convert_to_ll(self, position: np.ndarray) -> Optional[NavSatFix]:
-        response = self._call_geodetic(
-            self.to_ll_client, ToLL.Request(map_point=Point(x=float(position[0]), y=float(position[1]), z=float(position[2]))),
-            self.to_ll_service_name,
-        )
-        if response is None:
+        if not self._geographic_ready():
             return None
-        point = response.ll_point
-        result = NavSatFix(latitude=point.latitude, longitude=point.longitude, altitude=point.altitude)
-        result.header.stamp = self.get_clock().now().to_msg()
-        result.header.frame_id = self.world_frame_id
-        return result
+        try:
+            return pose_to_fix(self._world_pose(position), self.converter,
+                               self.local_axes, self.world_frame_id)
+        except ValueError:
+            return None
+
+    def _build_path_msg(self) -> Optional[GeoPath]:
+        """GeoPath of build_path() in lat/lon: poses[0] entry, poses[-1] exit, the rest pass-through points."""
+        points = self.build_path()
+        if points is None:
+            self.get_logger().warning("No Safe Passage path: entry and exit buoys are not both classified")
+            return None
+        msg = GeoPath()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        for point in points:
+            latlon = self._convert_to_ll(point)
+            if latlon is None:
+                self.get_logger().error("No Safe Passage path: geographic conversion failed")
+                return None
+            pose = GeoPoseStamped()
+            pose.header.stamp = msg.header.stamp
+            pose.pose.position.latitude, pose.pose.position.longitude = latlon.latitude, latlon.longitude
+            pose.pose.position.altitude = latlon.altitude
+            pose.pose.orientation.w = 1.0
+            msg.poses.append(pose)
+        self.get_logger().info(
+            f"Safe Passage path: entry, {len(points) - 2} pass-through point(s), exit: "
+            + json.dumps([[round(p.pose.position.latitude, 7), round(p.pose.position.longitude, 7)] for p in msg.poses])
+        )
+        return msg
+
+    def _publish_path(self):
+        msg = self._path_msg
+        if msg is not None and not self.enable:
+            msg.header.stamp = self.get_clock().now().to_msg()
+            self.path_pub.publish(msg)
 
     def _cb_get_entry(self, req: GetEntry.Request, res: GetEntry.Response) -> GetEntry.Response:
         return self._milestone_response(req, res, DetectedBuoyColor.FLASHING_BLUE, "Entry")
@@ -339,6 +383,9 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
                 latlon = self._convert_to_ll(track.current_centroid)
                 if latlon is not None:
                     res.buoy_latlon = latlon
+                else:
+                    res.found = False
+                    res.message = f"{name} buoy found, but geographic conversion failed."
         self.get_logger().info(res.message, throttle_duration_sec=2.0)
         return res
 
@@ -353,7 +400,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             if vehicle_pos is None:
                 res.success = False
                 res.goal_type = GOAL_TYPE_INVALID
-                res.message = "Geodetic /fromLL conversion failed."
+                res.message = "Geographic input conversion failed."
                 return res
         else:
             in_pose = req.current_pose
@@ -413,8 +460,12 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
 
         if req.return_latlon:
             ll = self._convert_to_ll(best.position)
-            if ll:
+            if ll is not None:
                 res.goal_latlon = ll
+            else:
+                res.success = False
+                res.goal_type = GOAL_TYPE_INVALID
+                res.message = "Goal found, but geographic conversion failed."
 
         self.get_logger().info(
             f"[_cb_extract_goal] {res.message}", throttle_duration_sec=2.0
