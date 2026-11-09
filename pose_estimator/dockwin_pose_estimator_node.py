@@ -1,3 +1,5 @@
+import copy
+import math
 from typing import Optional
 
 import cv2
@@ -32,6 +34,134 @@ from pose_estimator.utils.pose_estimator_node import (
     PoseEstimatorPosePubNode,
     get_translation_quaternion,
 )
+
+
+def _quaternion_matrix(quaternion: Quaternion) -> np.ndarray:
+    """Return a 3x3 rotation matrix for a geometry quaternion (x, y, z, w)."""
+    q = np.array([quaternion.x, quaternion.y, quaternion.z, quaternion.w], dtype=float)
+    norm = np.linalg.norm(q)
+    if not np.isfinite(norm) or norm < 1e-9:
+        raise ValueError("window pose has an invalid orientation quaternion")
+    x, y, z, w = q / norm
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=float,
+    )
+
+
+def _matrix_quaternion(matrix: np.ndarray) -> Quaternion:
+    """Convert a 3x3 rotation matrix to a normalized geometry quaternion."""
+    trace = float(np.trace(matrix))
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * scale
+        x = (matrix[2, 1] - matrix[1, 2]) / scale
+        y = (matrix[0, 2] - matrix[2, 0]) / scale
+        z = (matrix[1, 0] - matrix[0, 1]) / scale
+    elif matrix[0, 0] > matrix[1, 1] and matrix[0, 0] > matrix[2, 2]:
+        scale = math.sqrt(1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2]) * 2.0
+        w = (matrix[2, 1] - matrix[1, 2]) / scale
+        x = 0.25 * scale
+        y = (matrix[0, 1] + matrix[1, 0]) / scale
+        z = (matrix[0, 2] + matrix[2, 0]) / scale
+    elif matrix[1, 1] > matrix[2, 2]:
+        scale = math.sqrt(1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2]) * 2.0
+        w = (matrix[0, 2] - matrix[2, 0]) / scale
+        x = (matrix[0, 1] + matrix[1, 0]) / scale
+        y = 0.25 * scale
+        z = (matrix[1, 2] + matrix[2, 1]) / scale
+    else:
+        scale = math.sqrt(1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1]) * 2.0
+        w = (matrix[1, 0] - matrix[0, 1]) / scale
+        x = (matrix[0, 2] + matrix[2, 0]) / scale
+        y = (matrix[1, 2] + matrix[2, 1]) / scale
+        z = 0.25 * scale
+    return Quaternion(x=float(x), y=float(y), z=float(z), w=float(w))
+
+
+def create_standoff_pose(
+    window_pose: PoseStamped,
+    standoff_distance: float,
+    window_width: float,
+    window_height: float,
+) -> PoseStamped:
+    """Compute an ASV pose centered on the window normal at a fixed standoff.
+
+    The window PnP origin is its top-left corner; its local +Y axis points down
+    the window and local +Z is the plane normal. The normal is oriented toward
+    the camera, and the returned ASV pose faces back toward the window.
+    """
+    if not math.isfinite(standoff_distance) or standoff_distance <= 0.0:
+        raise ValueError("standoff_distance must be finite and positive")
+    if not math.isfinite(window_width) or window_width <= 0.0:
+        raise ValueError("window_width must be finite and positive")
+    if not math.isfinite(window_height) or window_height <= 0.0:
+        raise ValueError("window_height must be finite and positive")
+
+    rotation = _quaternion_matrix(window_pose.pose.orientation)
+    origin = np.array(
+        [
+            window_pose.pose.position.x,
+            window_pose.pose.position.y,
+            window_pose.pose.position.z,
+        ],
+        dtype=float,
+    )
+    center = origin + rotation[:, 0] * (window_width / 2.0)
+    center += rotation[:, 1] * (window_height / 2.0)
+    normal = rotation[:, 2]
+
+    # PnP may choose either normal direction; select the side containing camera.
+    if float(np.dot(normal, -center)) < 0.0:
+        normal = -normal
+
+    forward = -normal
+    up = -rotation[:, 1]
+    up -= np.dot(up, forward) * forward
+    up_norm = float(np.linalg.norm(up))
+    forward_norm = float(np.linalg.norm(forward))
+    if up_norm < 1e-6 or forward_norm < 1e-6:
+        raise ValueError("window pose does not define a usable standoff orientation")
+    forward /= forward_norm
+    up /= up_norm
+    left = np.cross(up, forward)
+    left_norm = float(np.linalg.norm(left))
+    if left_norm < 1e-6:
+        raise ValueError("window up and normal axes are degenerate")
+    left /= left_norm
+    up = np.cross(forward, left)
+
+    target = copy.deepcopy(window_pose)
+    position = center + normal * standoff_distance
+    target.pose.position = Point(
+        x=float(position[0]), y=float(position[1]), z=float(position[2])
+    )
+    target.pose.orientation = _matrix_quaternion(
+        np.column_stack((forward, left, up))
+    )
+    return target
+
+
+def is_lower_window_pose(
+    window_pose: PoseStamped,
+    y_threshold: float = 0.0,
+    single_visible_window: bool = False,
+) -> bool:
+    """Classify a window as lower in the camera optical frame (+Y points down).
+
+    This matches the firefighting report's existing window-ID rule: Y below the
+    threshold is upper, and Y greater than or equal to it is lower.
+    """
+    y = float(window_pose.pose.position.y)
+    if not math.isfinite(y):
+        return False
+    if single_visible_window:
+        return True
+    return math.isfinite(y_threshold) and y >= y_threshold
 
 
 def _polygon_to_binary_mask(
@@ -108,6 +238,32 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         )
         if not 0.0 <= self.depth_filter_alpha <= 1.0:
             raise ValueError("depth_filter_alpha must be in the range [0, 1]")
+        self.standoff_distance = (
+            self.declare_parameter("standoff_distance", 2.5)
+            .get_parameter_value()
+            .double_value
+        )
+        if not math.isfinite(self.standoff_distance) or self.standoff_distance <= 0.0:
+            raise ValueError("standoff_distance must be finite and positive")
+        self.lower_window_y_threshold = (
+            self.declare_parameter("lower_window_y_threshold", 0.0)
+            .get_parameter_value()
+            .double_value
+        )
+        if not math.isfinite(self.lower_window_y_threshold):
+            raise ValueError("lower_window_y_threshold must be finite")
+        self.assume_single_visible_window_is_lower = (
+            self.declare_parameter("assume_single_visible_window_is_lower", True)
+            .get_parameter_value()
+            .bool_value
+        )
+        self.standoff_pose_topic = (
+            self.declare_parameter("standoff_pose_topic", "dockwin/standoff_pose")
+            .get_parameter_value()
+            .string_value
+        )
+        if not self.standoff_pose_topic.strip():
+            raise ValueError("standoff_pose_topic must not be empty")
 
         detections_topic = (
             self.declare_parameter("input_detections_topic", "yolo/detections")
@@ -158,6 +314,9 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
             )
             for frame_name in self.frame_name_remap.values()
         }
+        self._standoff_pose_publisher = self.create_publisher(
+            PoseStamped, self.standoff_pose_topic, qos_profile_sensor_data
+        )
         self._filtered_tvecs = {}
 
         if self.use_depth_image and self.input_depth_image_topic:
@@ -221,6 +380,14 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         best_detections = get_best_detections_per_class(
             filtered_detections, self.input_detection_classes
         )
+        visible_window_count = sum(
+            detection.class_name in self.input_detection_classes
+            for detection in filtered_detections.detections
+        )
+        single_visible_window = (
+            self.assume_single_visible_window_is_lower
+            and visible_window_count == 1
+        )
 
         for class_name, detection in best_detections.items():
             try:
@@ -262,7 +429,14 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
                     ),
                 ]
             )
-            self.publish_data(tvec, rvec, object_points, msg.header, frame_name)
+            self.publish_data(
+                tvec,
+                rvec,
+                object_points,
+                msg.header,
+                frame_name,
+                single_visible_window=single_visible_window,
+            )
 
     def publish_data(
         self,
@@ -271,6 +445,7 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         object_points: np.ndarray,
         header,
         object_frame_id: str,
+        single_visible_window: bool = False,
     ) -> None:
         try:
             t, q = get_translation_quaternion(tvec, rvec)
@@ -290,6 +465,31 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
             x=float(q[0]), y=float(q[1]), z=float(q[2]), w=float(q[3])
         )
         self.pose_publishers[object_frame_id].publish(pose)
+        # The firefighting hold is specifically for the lower window. In the
+        # camera optical frame, positive Y points down, matching the tree's
+        # existing upper/lower report selection rule.
+        if not is_lower_window_pose(
+            pose,
+            self.lower_window_y_threshold,
+            single_visible_window=single_visible_window,
+        ):
+            return
+        class_name = next(
+            key for key, value in self.frame_name_remap.items() if value == object_frame_id
+        )
+        points = self.object_points[class_name]
+        window_width = float(np.max(points[:, 0]) - np.min(points[:, 0]))
+        window_height = float(np.max(points[:, 1]) - np.min(points[:, 1]))
+        try:
+            standoff_pose = create_standoff_pose(
+                pose, self.standoff_distance, window_width, window_height
+            )
+        except ValueError as exc:
+            self.get_logger().warning(
+                f"Could not compute ASV standoff pose for {object_frame_id}: {exc}"
+            )
+            return
+        self._standoff_pose_publisher.publish(standoff_pose)
 
     def _extract_mask_depth(
         self, depth_img: np.ndarray, detection: Detection
