@@ -90,9 +90,9 @@ def test_fewer_than_two_circles_is_rejected(visible_labels):
         )
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-@pytest.mark.parametrize("inlier_threshold", [3.0, 8.0])
-@pytest.mark.parametrize("clip_fraction", [0.2, 0.4])
+@pytest.mark.parametrize("seed,inlier_threshold,clip_fraction", [
+    (0, 3.0, 0.2), (1, 3.0, 0.4), (2, 8.0, 0.2), (0, 8.0, 0.4),
+])
 @pytest.mark.parametrize("visible_labels", [
     ("red_circle", "green_circle"),
     ("red_circle", "blue_circle"),

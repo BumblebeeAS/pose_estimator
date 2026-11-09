@@ -17,6 +17,13 @@ from pose_estimator.utils.PinholeCamera import PinholeCamera
 CENTERS = {'red_circle':[-.5,-.35], 'green_circle':[.5,-.35], 'blue_circle':[0.,.5]}
 
 
+def reference_node(now=100.):
+    return SimpleNamespace(
+        reference_transforms={}, fixed_orientation=None, orientation_frame='odom_ned',
+        max_reference_age=5., tf_buffer=tf2_ros.Buffer(), get_logger=lambda: Mock(),
+        get_clock=lambda: SimpleNamespace(now=lambda: Time(seconds=now)))
+
+
 def projected_contours(camera, rotation, translation):
     angles=np.linspace(0,2*np.pi,100,endpoint=False)
     points=np.column_stack([-.5+.35*np.cos(angles),-.35+.35*np.sin(angles),np.zeros_like(angles)])
@@ -31,9 +38,7 @@ def test_reference_is_fresh_copied_and_cleared_on_failed_refresh():
     tf.header.frame_id = "odom_ned"
     tf.child_frame_id = "pad/clustered_0"
     tf.transform.rotation.z, tf.transform.rotation.w = .6, .8
-    node = SimpleNamespace(fixed_orientation=None, orientation_frame='odom_ned', max_reference_age=5.0,
-                           tf_buffer=Mock(), get_logger=lambda:Mock(),
-                           get_clock=lambda:SimpleNamespace(now=lambda:Time(seconds=100)))
+    node = reference_node()
     node.reference_transforms = {'pad/clustered_0': tf}
     request = TrashToggleFrame.Request(enable=True, trash_frame_clustered='pad/clustered_0')
     call = module.TinsPadPoseEstimator.set_orientation_reference
@@ -105,10 +110,7 @@ def test_one_circle_publishes_world_position_with_exact_retained_quaternion(
 def test_static_latest_lookup_zero_stamp_does_not_reject_fresh_cluster():
     # Reproduce TF2 semantics rather than assuming lookup_transform(Time())
     # preserves the source header. The original /tf_static sample is fresh.
-    node=SimpleNamespace(reference_transforms={},fixed_orientation=None,
-                         orientation_frame='odom_ned', max_reference_age=5.0,tf_buffer=tf2_ros.Buffer(),
-                         get_logger=lambda:Mock(),
-                         get_clock=lambda:SimpleNamespace(now=lambda:Time(seconds=100)))
+    node = reference_node()
     reference=TransformStamped()
     reference.header.frame_id='odom_ned';reference.child_frame_id='pad/clustered_0'
     reference.header.stamp=Time(seconds=99.5).to_msg()
@@ -125,10 +127,7 @@ def test_static_latest_lookup_zero_stamp_does_not_reject_fresh_cluster():
 
 
 def test_reference_orientation_composes_parent_rotation():
-    node=SimpleNamespace(reference_transforms={},fixed_orientation=None,
-                         orientation_frame='odom_ned', max_reference_age=5.0,tf_buffer=tf2_ros.Buffer(),
-                         get_logger=lambda:Mock(),
-                         get_clock=lambda:SimpleNamespace(now=lambda:Time(seconds=100)))
+    node = reference_node()
     parent=TransformStamped();parent.header.frame_id='odom_ned';parent.child_frame_id='intermediate'
     parent.transform.rotation.z=parent.transform.rotation.w=2**-.5
     node.tf_buffer.set_transform_static(parent,'test')
@@ -150,10 +149,8 @@ def test_sequential_camera_handoff_does_not_expire_between_cameras():
     # Reproduce the observed run: wide succeeds around age 1.8 s, while
     # narrow handles the same reference after the former 2 s deadline.
     for now in (100.,100.4):
-        node=SimpleNamespace(reference_transforms={'pad':reference},fixed_orientation=None,
-                             orientation_frame='odom_ned',max_reference_age=5.,
-                             get_logger=lambda:Mock(),
-                             get_clock=lambda:SimpleNamespace(now=lambda:Time(seconds=now)))
+        node = reference_node(now)
+        node.reference_transforms['pad'] = reference
         result=module.TinsPadPoseEstimator.set_orientation_reference(
             node,TrashToggleFrame.Request(enable=True,trash_frame_clustered='pad'),TrashToggleFrame.Response())
         assert result.success
@@ -173,9 +170,7 @@ def test_explicit_saved_orientation_survives_a_long_approach(clock_time):
     request.orientation.header.frame_id='odom_ned'
     request.orientation.header.stamp=Time(seconds=100).to_msg()
     request.orientation.quaternion.z=.6;request.orientation.quaternion.w=.8
-    node=SimpleNamespace(fixed_orientation=None,orientation_frame='odom_ned',
-                         get_logger=lambda:Mock(),
-                         get_clock=lambda:SimpleNamespace(now=lambda:Time(seconds=clock_time)))
+    node = reference_node(clock_time)
     response=module.TinsPadPoseEstimator.set_saved_orientation(node,request,SetOrientationReference.Response())
     assert response.success
     np.testing.assert_allclose(node.fixed_orientation,[0,0,.6,.8])

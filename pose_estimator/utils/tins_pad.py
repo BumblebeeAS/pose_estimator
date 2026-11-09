@@ -134,12 +134,16 @@ def estimate_tins_pad_pose(camera, contours, centers, radius, level_rotation,
     for count in group_sizes:
         slices.append(slice(start, start + count))
         start += count
+    def consensus(params):
+        errors = np.linalg.norm(residual(params).reshape(-1, 2), axis=1)
+        mask = errors <= inlier_threshold
+        if any(np.count_nonzero(mask[group]) < max(5, int(np.ceil(0.5 * len(errors[group]))))
+               for group in slices):
+            raise ValueError("Insufficient platform consensus for a circle")
+        return errors, mask
+
     for _ in range(3):
-        errors = np.linalg.norm(residual(result.x).reshape(-1, 2), axis=1)
-        inlier_mask = errors <= inlier_threshold
-        for group in slices:
-            if np.count_nonzero(inlier_mask[group]) < max(5, int(np.ceil(0.5 * len(errors[group])))):
-                raise ValueError("Insufficient platform consensus for a circle")
+        _, inlier_mask = consensus(result.x)
         result = least_squares(
             lambda params: residual(params).reshape(-1, 2)[inlier_mask].ravel(),
             result.x,
@@ -157,10 +161,6 @@ def estimate_tins_pad_pose(camera, contours, centers, radius, level_rotation,
     rvec, _ = cv2.Rodrigues(root_rotation)
     if translation[2] <= 0:
         raise ValueError("Platform is behind the camera")
-    final_errors = np.linalg.norm(residual(result.x).reshape(-1, 2), axis=1)
-    inlier_mask = final_errors <= inlier_threshold
-    for group in slices:
-        if np.count_nonzero(inlier_mask[group]) < max(5, int(np.ceil(0.5 * len(final_errors[group])))):
-            raise ValueError("Insufficient platform consensus for a circle")
+    final_errors, inlier_mask = consensus(result.x)
     error = np.sqrt(np.mean(final_errors[inlier_mask] ** 2))
     return rvec, translation.reshape(3, 1), float(error)
