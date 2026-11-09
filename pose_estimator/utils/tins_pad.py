@@ -35,8 +35,9 @@ def estimate_tins_pad_pose(camera, contours, centers, radius, level_rotation,
     if (model.shape != (len(contours), 2) or not np.isfinite(model).all()
             or (fixed_yaw is None and np.linalg.matrix_rank(model - model.mean(0)) < 1)):
         raise ValueError("Circle centers must include two distinct finite points")
-    pixels, model_centers, initial_centers = [], [], []
+    pixels, model_centers, initial_centers, normalized_points = [], [], [], []
     group_sizes = []
+    camera_matrix, distortion = camera.camera_matrix(), camera.dist_coeffs()
     for label, center in zip(contours, model):
         points = np.asarray(contours[label], dtype=np.float32).reshape(-1, 2)
         if len(points) < 5 or not np.isfinite(points).all():
@@ -55,20 +56,19 @@ def estimate_tins_pad_pose(camera, contours, centers, radius, level_rotation,
         # Bound optimization cost without duplicating short visible arcs.
         points = inliers[np.linspace(0, len(inliers) - 1, min(40, len(inliers))).astype(int)]
         normalized = cv2.undistortPoints(
-            points[:, None], camera.camera_matrix(), camera.dist_coeffs()
+            points[:, None], camera_matrix, distortion
         ).reshape(-1, 2)
         (cx, cy), axes, _ = cv2.fitEllipse(normalized.astype(np.float32))
         depth = 2 * radius / max(axes)
         initial_centers.append((np.array([cx, cy, 1.0]) * depth) @ level_rotation)
         pixels.append(points)
+        normalized_points.append(normalized)
         group_sizes.append(len(points))
         model_centers.append(np.tile(center, (len(points), 1)))
 
     pixels = np.concatenate(pixels)
     model_centers = np.concatenate(model_centers)
-    normalized = cv2.undistortPoints(
-        pixels[:, None], camera.camera_matrix(), camera.dist_coeffs()
-    ).reshape(-1, 2)
+    normalized = np.concatenate(normalized_points)
     rays = np.column_stack([normalized, np.ones(len(normalized))]) @ level_rotation
     if np.min(np.abs(rays[:, 2])) < 1e-4:
         raise ValueError("Platform is too close to the horizon")
@@ -109,7 +109,7 @@ def estimate_tins_pad_pose(camera, contours, centers, radius, level_rotation,
             circle_xy + radius * radial, np.full(len(pixels), distance)
         ])
         projected, _ = cv2.projectPoints(
-            nearest, level_rvec, np.zeros(3), camera.camera_matrix(), camera.dist_coeffs()
+            nearest, level_rvec, np.zeros(3), camera_matrix, distortion
         )
         return (projected[:, 0] - pixels).ravel()
 

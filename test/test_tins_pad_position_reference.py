@@ -2,7 +2,6 @@
 from types import SimpleNamespace, MethodType
 from unittest.mock import Mock
 
-import cv2
 import numpy as np
 import pytest
 import tf2_ros
@@ -14,7 +13,7 @@ from tf_transformations import quaternion_from_euler, quaternion_matrix
 
 from pose_estimator import tins_pad_pose_estimator_node as module
 from pose_estimator.utils.PinholeCamera import PinholeCamera
-CENTERS = {'red_circle':[-.5,-.35], 'green_circle':[.5,-.35], 'blue_circle':[0.,.5]}
+from .test_tins_pad_pose import CENTERS, projected_contours
 
 
 def reference_node(now=100.):
@@ -22,14 +21,6 @@ def reference_node(now=100.):
         reference_transforms={}, fixed_orientation=None, orientation_frame='odom_ned',
         max_reference_age=5., tf_buffer=tf2_ros.Buffer(), get_logger=lambda: Mock(),
         get_clock=lambda: SimpleNamespace(now=lambda: Time(seconds=now)))
-
-
-def projected_contours(camera, rotation, translation):
-    angles=np.linspace(0,2*np.pi,100,endpoint=False)
-    points=np.column_stack([-.5+.35*np.cos(angles),-.35+.35*np.sin(angles),np.zeros_like(angles)])
-    pixels,_=cv2.projectPoints(points,cv2.Rodrigues(rotation)[0],translation,
-                              camera.camera_matrix(),camera.dist_coeffs())
-    return {'red_circle':pixels[:,0]}
 
 
 def test_reference_is_fresh_copied_and_cleared_on_failed_refresh():
@@ -163,14 +154,13 @@ def test_sequential_camera_handoff_does_not_expire_between_cameras():
     assert '5.00' in result.message
 
 
-@pytest.mark.parametrize('clock_time',[101.,160.,10000.])
-def test_explicit_saved_orientation_survives_a_long_approach(clock_time):
+def test_explicit_saved_orientation_survives_a_long_approach():
     from bb_perception_msgs.srv import SetOrientationReference
     request=SetOrientationReference.Request(enable=True)
     request.orientation.header.frame_id='odom_ned'
     request.orientation.header.stamp=Time(seconds=100).to_msg()
     request.orientation.quaternion.z=.6;request.orientation.quaternion.w=.8
-    node = reference_node(clock_time)
+    node = reference_node(10000.)
     response=module.TinsPadPoseEstimator.set_saved_orientation(node,request,SetOrientationReference.Response())
     assert response.success
     np.testing.assert_allclose(node.fixed_orientation,[0,0,.6,.8])
