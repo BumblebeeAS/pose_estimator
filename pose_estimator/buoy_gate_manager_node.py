@@ -14,6 +14,7 @@ import tf2_ros
 import tf_transformations
 from bb_robotx_msgs.msg import BuoyDetectionArray
 from bb_robotx_msgs.srv import ExtractLocalGoal, GetEntry, GetExit, SetGateManagerState
+from geographic_msgs.msg import GeoPath, GeoPoseStamped
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -21,7 +22,9 @@ from rclpy.clock import ClockType
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data,
+)
 from rclpy.time import Time
 from robot_localization.srv import FromLL, ToLL
 from sensor_msgs.msg import NavSatFix
@@ -33,6 +36,12 @@ from pose_estimator.buoy.observations import ObservationBuffer
 from pose_estimator.buoy.planning import GatePlanning, GOAL_TYPE_INVALID
 from pose_estimator.buoy.visualization import GateVisualization
 from pose_estimator.utils.odometry_transforms import add_odometry_transform
+
+# Safe Passage path for the ASV: best effort over the lossy link, volatile so only a live path counts.
+PATH_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST, depth=1,
+    reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE,
+)
 
 
 class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
@@ -49,8 +58,8 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
         self.marker_topic = param("marker_topic", "gate_manager_markers")
         tf_wait_timeout = param("tf_wait_timeout", 0.25)
         max_pending = param("max_pending_observations", 1000)
-        self.from_ll_service_name = param("from_ll_service", "/fromLL")
-        self.to_ll_service_name = param("to_ll_service", "/toLL")
+        self.from_ll_service_name = param("from_ll_service", "fromLL")  # relative: /uav/fromLL
+        self.to_ll_service_name = param("to_ll_service", "toLL")  # relative: /uav/toLL
         self.geodetic_timeout = param("geodetic_timeout", 3.0)
         if not np.isfinite(self.geodetic_timeout) or self.geodetic_timeout <= 0:
             raise ValueError("Geodetic timeout must be finite and positive")
@@ -58,6 +67,8 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
         self.base_link_frame_id = param("base_link_frame_id", "base_link")
         self.fft_timer_period = param("fft_timer_period", 0.5)
         self.max_gate_width = param("max_gate_width", 1.0)
+        # Safe Passage path standoff for unpaired buoys. Keep above the ASV's sample_radius.
+        self.standoff_distance = param("standoff_distance", 1.5)
         self.vehicle_encasing_radius = param("vehicle_encasing_radius", 0.8)
         self.waypoint_pass_tol = param("waypoint_pass_tol", 1.0)
         self.visualize_candidates = param("visualize_candidates", True)
@@ -94,7 +105,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             required_density=param("required_density", 0.8),
             butterworth_cutoff_freq=param("butterworth_cutoff_freq", 3.0),
             butterworth_order=param("butterworth_order", 4),
-            target_freq=param("target_freq", 1.0),
+            target_freq=param("target_freq", 0.5),  # handbook: 1 s on, 1 s off
             target_freq_tol=param("target_freq_tol", 0.2),
             duty_cycle_min=param("duty_cycle_min", 0.1),
             duty_cycle_max=param("duty_cycle_max", 0.85),
@@ -114,6 +125,13 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             callback_group=self.main_cb_group,
         )
         self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
+
+        # Safe Passage path: built when frozen, served only while frozen
+        self._path_msg: Optional[GeoPath] = None
+        self.path_pub = self.create_publisher(GeoPath, param("path_topic", "safe_passage/path"), PATH_QOS)
+        self.path_timer = self.create_timer(
+            param("path_publish_period", 1.0), self._publish_path, callback_group=MutuallyExclusiveCallbackGroup()
+        )
 
         # Service servers
         self.srv_set_state = self.create_service(
@@ -248,6 +266,9 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
                 self.get_logger().info("BUOY_SEARCH_FROZEN " + json.dumps(tracks))
             self.observations.clear()
             self.track_manager.detection_buffer.clear()
+            self._path_msg = self._build_path_msg()
+        else:
+            self._path_msg = None  # collecting again: stop serving before the tracks change
         self.enable = req.enable
         self.track_manager.temporal_window = req.temporal_window
         res.success = True
@@ -262,6 +283,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
         """Clear pending observations, tracks, and query history."""
         self.observations.clear()
         self.track_manager.clear_all_tracks()
+        self._path_msg = None
         self.last_query_pos = None
         self.prev_query_pos = None
         res.success = True
@@ -312,6 +334,36 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
         result.header.frame_id = self.world_frame_id
         return result
 
+    def _build_path_msg(self) -> Optional[GeoPath]:
+        """GeoPath of build_path() in lat/lon: poses[0] entry, poses[-1] exit, the rest pass-through points."""
+        points = self.build_path()
+        if points is None:
+            self.get_logger().warning("No Safe Passage path: entry and exit buoys are not both classified")
+            return None
+        msg = GeoPath()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        for point in points:
+            latlon = self._convert_to_ll(point)
+            if latlon is None:
+                self.get_logger().error("No Safe Passage path: toLL conversion failed")
+                return None
+            pose = GeoPoseStamped()
+            pose.header.stamp = msg.header.stamp
+            pose.pose.position.latitude, pose.pose.position.longitude = latlon.latitude, latlon.longitude
+            pose.pose.orientation.w = 1.0
+            msg.poses.append(pose)
+        self.get_logger().info(
+            f"Safe Passage path: entry, {len(points) - 2} pass-through point(s), exit: "
+            + json.dumps([[round(p.pose.position.latitude, 7), round(p.pose.position.longitude, 7)] for p in msg.poses])
+        )
+        return msg
+
+    def _publish_path(self):
+        msg = self._path_msg
+        if msg is not None and not self.enable:
+            msg.header.stamp = self.get_clock().now().to_msg()
+            self.path_pub.publish(msg)
+
     def _cb_get_entry(self, req: GetEntry.Request, res: GetEntry.Response) -> GetEntry.Response:
         return self._milestone_response(req, res, DetectedBuoyColor.FLASHING_BLUE, "Entry")
 
@@ -353,7 +405,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Node):
             if vehicle_pos is None:
                 res.success = False
                 res.goal_type = GOAL_TYPE_INVALID
-                res.message = "Geodetic /fromLL conversion failed."
+                res.message = f"Geodetic {self.from_ll_service_name} conversion failed."
                 return res
         else:
             in_pose = req.current_pose

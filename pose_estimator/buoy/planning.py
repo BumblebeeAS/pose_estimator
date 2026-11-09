@@ -81,48 +81,46 @@ class GatePlanning:
             return None, "UNAVAILABLE"
         return np.array([math.cos(drone_yaw), math.sin(drone_yaw)]), "DRONE_HEADING"
 
-    def _generate_candidates(self, vehicle_pos: np.ndarray) -> List[GoalCandidate]:
-        """Pair nearby red/green tracks, offset unpaired buoys, and include the exit."""
-        red_tracks = [
-            t
-            for t in self.track_manager.tracks.values()
-            if t.published_state == DetectedBuoyColor.FLASHING_RED
-            and t.current_centroid is not None
-        ]
-        green_tracks = [
-            t
-            for t in self.track_manager.tracks.values()
-            if t.published_state == DetectedBuoyColor.FLASHING_GREEN
-            and t.current_centroid is not None
-        ]
+    def _tracks_in(self, state: DetectedBuoyColor) -> list:
+        return [t for t in self.track_manager.tracks.values()
+                if t.published_state == state and t.current_centroid is not None]
 
-        candidates: List[GoalCandidate] = []
-        paired_red: Set[int] = set()
-        paired_green: Set[int] = set()
+    def _pair_gates(self):
+        """Greedy nearest red/green pairs within max_gate_width.
 
+        Returns (gates, red, green, paired_red, paired_green), gates as (width, red track, green track).
+        """
+        red_tracks = self._tracks_in(DetectedBuoyColor.FLASHING_RED)
+        green_tracks = self._tracks_in(DetectedBuoyColor.FLASHING_GREEN)
         pairs = []
         for rt in red_tracks:
             for gt in green_tracks:
                 dist = np.linalg.norm(rt.current_centroid[:2] - gt.current_centroid[:2])
                 if dist <= self.max_gate_width:
-                    pairs.append((dist, rt.track_id, gt.track_id))
+                    pairs.append((dist, rt, gt))
         pairs.sort(key=lambda x: x[0])
-        for dist, r_id, g_id in pairs:
-            if r_id not in paired_red and g_id not in paired_green:
-                paired_red.add(r_id)
-                paired_green.add(g_id)
-                midpoint = 0.5 * (
-                    self.track_manager.tracks[r_id].current_centroid
-                    + self.track_manager.tracks[g_id].current_centroid
-                )
-                candidates.append(
-                    GoalCandidate(
-                        goal_type=GOAL_TYPE_GATE_PAIR,
-                        position=midpoint,
-                        track_ids=(r_id, g_id),
-                        gate_width=float(dist),
-                    )
-                )
+        gates = []
+        paired_red: Set[int] = set()
+        paired_green: Set[int] = set()
+        for dist, rt, gt in pairs:
+            if rt.track_id not in paired_red and gt.track_id not in paired_green:
+                paired_red.add(rt.track_id)
+                paired_green.add(gt.track_id)
+                gates.append((float(dist), rt, gt))
+        return gates, red_tracks, green_tracks, paired_red, paired_green
+
+    def _generate_candidates(self, vehicle_pos: np.ndarray) -> List[GoalCandidate]:
+        """Pair nearby red/green tracks, offset unpaired buoys, and include the exit."""
+        gates, red_tracks, green_tracks, paired_red, paired_green = self._pair_gates()
+        candidates: List[GoalCandidate] = [
+            GoalCandidate(
+                goal_type=GOAL_TYPE_GATE_PAIR,
+                position=0.5 * (rt.current_centroid + gt.current_centroid),
+                track_ids=(rt.track_id, gt.track_id),
+                gate_width=width,
+            )
+            for width, rt, gt in gates
+        ]
 
         # RED and GREEN use opposite perpendicular standoffs.
         for tracks, paired, side in ((red_tracks, paired_red, 1), (green_tracks, paired_green, -1)):
@@ -193,3 +191,32 @@ class GatePlanning:
     ) -> Optional[GoalCandidate]:
         """Return the first valid candidate from the sorted list."""
         return next((candidate for candidate in candidates if candidate.is_valid), None)
+
+    def build_path(self) -> Optional[List[np.ndarray]]:
+        """Full Safe Passage path in world_frame_id: [entry, pass-through points..., exit], or None.
+
+        Needs both entry (FLASHING_BLUE) and exit (SOLID_BLUE): their axis orders everything. Every gate midpoint
+        and every unpaired red/green standoff is included (no corridor), sorted by projection on the axis.
+        Standoffs sit standoff_distance off the buoy perpendicular to the axis, red to the left of travel
+        (red on starboard), green to the right (green on port). Black and unknown buoys are not waypoints.
+        """
+        entry, exit_ = self._get_milestone_centroids()
+        if entry is None or exit_ is None:
+            return None
+        axis = exit_[:2] - entry[:2]
+        length = float(np.linalg.norm(axis))
+        if length < 0.1:
+            return None
+        axis = axis / length
+        left = np.array([-axis[1], axis[0]])
+
+        gates, red_tracks, green_tracks, paired_red, paired_green = self._pair_gates()
+        points = [0.5 * (rt.current_centroid + gt.current_centroid) for _, rt, gt in gates]
+        for tracks, paired, side in ((red_tracks, paired_red, 1.0), (green_tracks, paired_green, -1.0)):
+            for track in tracks:
+                if track.track_id not in paired:
+                    point = track.current_centroid.copy()
+                    point[:2] += side * self.standoff_distance * left
+                    points.append(point)
+        points.sort(key=lambda p: float(np.dot(p[:2] - entry[:2], axis)))
+        return [entry.copy(), *points, exit_.copy()]
