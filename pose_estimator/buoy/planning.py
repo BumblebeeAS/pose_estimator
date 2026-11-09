@@ -37,6 +37,13 @@ class GoalCandidate:
 
 
 class GatePlanning:
+    local_axes = "enu"
+
+    def _left_perpendicular(self, direction):
+        """Physical left in ENU (up) or NED (down), independent of frame names."""
+        perpendicular = np.array([-direction[1], direction[0]])
+        return -perpendicular if self.local_axes == "ned" else perpendicular
+
     def _get_milestone_centroids(
         self,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -128,9 +135,11 @@ class GatePlanning:
                 if track.track_id in paired:
                     continue
                 delta = track.current_centroid[:2] - vehicle_pos[:2]
-                angle = math.atan2(delta[1], delta[0]) + side * math.pi / 2
+                # For a coincident query, match the historical +x fallback.
+                length = np.linalg.norm(delta)
+                direction = delta / length if length > 0 else np.array([1., 0.])
                 position = track.current_centroid.copy()
-                position[:2] += self.vehicle_encasing_radius * np.array([math.cos(angle), math.sin(angle)])
+                position[:2] += side * self.vehicle_encasing_radius * self._left_perpendicular(direction)
                 candidates.append(GoalCandidate(
                     goal_type=GOAL_TYPE_SINGULAR_BUOY, position=position, track_ids=(track.track_id,),
                 ))
@@ -208,7 +217,7 @@ class GatePlanning:
         if length < 0.1:
             return None
         axis = axis / length
-        left = np.array([-axis[1], axis[0]])
+        left = self._left_perpendicular(axis)
 
         gates, red_tracks, green_tracks, paired_red, paired_green = self._pair_gates()
         points = [0.5 * (rt.current_centroid + gt.current_centroid) for _, rt, gt in gates]

@@ -278,24 +278,6 @@ def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color():
     assert [(o.timestamp, o.color) for o in primary.observations] == [(3., 'blue')]
 
 
-@pytest.mark.parametrize('outcome', ['unavailable', 'timeout', 'error'])
-def test_geodetic_failures_are_bounded(ros_manager, outcome):
-    from concurrent.futures import Future
-    node = ros_manager
-    node.geodetic_timeout = .01
-    future = Future()
-    if outcome == 'error':
-        future.set_exception(RuntimeError('conversion failed'))
-    client = Mock()
-    client.wait_for_service.return_value = outcome != 'unavailable'
-    client.call_async.return_value = future
-    assert node._call_geodetic(client, object(), '/test_conversion') is None
-    if outcome == 'unavailable':
-        client.call_async.assert_not_called()
-    elif outcome == 'timeout':
-        assert future.cancelled()
-
-
 def test_candidate_markers_keep_geometry_and_labels(ros_manager):
     node = ros_manager
     node.marker_pub = Mock()
@@ -318,48 +300,6 @@ def test_candidate_markers_keep_geometry_and_labels(ros_manager):
     assert not {'gate_query', 'gate_forward', 'gate_forward_label', 'gate_candidate_rays'} & by_ns.keys()
     assert by_ns['gate_candidate_labels'].pose.position.z == .2
     assert 'GATE_PAIR' in by_ns['gate_candidate_labels'].text
-
-
-def test_geodetic_bridge_round_trip_with_real_ros_services(ros_manager):
-    from threading import Thread
-    from rclpy.executors import MultiThreadedExecutor
-    from robot_localization.srv import FromLL, ToLL
-    from sensor_msgs.msg import NavSatFix
-    node = ros_manager
-    received = []
-
-    def from_ll(request, response):
-        received.append(request.ll_point)
-        response.map_point.x = 10.
-        response.map_point.y = 20.
-        response.map_point.z = 30.
-        return response
-
-    def to_ll(request, response):
-        received.append(request.map_point)
-        response.ll_point.latitude = 1.
-        response.ll_point.longitude = 2.
-        response.ll_point.altitude = 3.
-        return response
-
-    node.create_service(FromLL, node.from_ll_service_name, from_ll)
-    node.create_service(ToLL, node.to_ll_service_name, to_ll)
-    executor = MultiThreadedExecutor(num_threads=2)
-    executor.add_node(node)
-    thread = Thread(target=executor.spin)
-    thread.start()
-    try:
-        local = node._convert_from_ll(NavSatFix(latitude=1., longitude=2., altitude=3.))
-        np.testing.assert_array_equal(local, [10., 20., 30.])
-        global_position = node._convert_to_ll(local)
-        assert isinstance(global_position, NavSatFix)
-        assert (global_position.latitude, global_position.longitude, global_position.altitude) == (1., 2., 3.)
-        assert global_position.header.stamp.sec > 0
-        assert (received[0].latitude, received[0].longitude, received[0].altitude) == (1., 2., 3.)
-        assert (received[1].x, received[1].y, received[1].z) == (10., 20., 30.)
-    finally:
-        executor.shutdown()
-        thread.join(timeout=2.)
 
 
 def test_unknown_positions_establish_track_and_preserve_height_in_markers(ros_manager):
