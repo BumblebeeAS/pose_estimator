@@ -32,33 +32,13 @@ Configure `input_detections_topic`, `camera_info_topic`, `output_detections_topi
 
 ### Buoy gate manager
 
-`buoy_gate_manager_node` separates ROS services from observation buffering,
-tracking, goal planning, and marker rendering in `utils/buoy_*.py`. Collection
-starts disabled. Enable or freeze it with `set_gate_manager_state`; freezing
-processes ready observations, logs a `BUOY_SEARCH_FROZEN` track summary, and
-clears pending input. `reset_tracks` clears tracks and query history.
+`buoy_gate_manager_node` separates ROS services from observation buffering, tracking, goal planning, and marker rendering in `utils/buoy_*.py`. Collection starts disabled. Enable or freeze it with `set_gate_manager_state`; freezing processes ready observations, logs a `BUOY_SEARCH_FROZEN` track summary, and clears pending input. `reset_tracks` clears tracks and query history.
 
-Observations use their pose header, falling back to the array header. The manager
-waits for TF at the source timestamp (`tf_wait_timeout`: 0.25 s,
-`max_pending_observations`: 1000), dropping invalid, expired, or overflowed input.
-Set `input_odom_topic` to build motion transforms from odometry and listen only
-to static TF; leave it empty to use the normal TF listener. Association uses XY
-distance while retaining measured height. Observations update the nearest track
-within `max_association_radius`; unmatched samples accumulate for DBSCAN.
+Observations use their pose header, falling back to the array header. The manager waits for TF at the source timestamp (`tf_wait_timeout`: 0.25 s, `max_pending_observations`: 1000), dropping invalid, expired, or overflowed input. Set `input_odom_topic` to build motion transforms from odometry and listen only to static TF; leave it empty to use the normal TF listener. Association uses XY distance while retaining measured height. Observations update the nearest track within `max_association_radius`; unmatched samples accumulate for DBSCAN.
 
-Color 255 contributes position without OFF evidence. Classification requires
-`required_density` known-color coverage and splits sightings at `max_color_gap`
-(default 0.5 s). Each segment must span `min_flash_cycles` (default two) and have
-enough resampled points for filtering. Duration-weighted FFT evidence combines
-qualifying segments without interpolating across visibility gaps. Insufficient
-evidence retains the previous state. Blue entry and exit tracks survive timeouts
-and merge duplicate histories in timestamp order.
+Color 255 contributes position without OFF evidence. Classification requires `required_density` known-color coverage and splits sightings at `max_color_gap` (default 0.5 s). Each segment must span `min_flash_cycles` (default two) and have enough resampled points for filtering. Duration-weighted FFT evidence combines qualifying segments without interpolating across visibility gaps. Insufficient evidence retains the previous state. Blue entry and exit tracks survive timeouts and merge duplicate histories in timestamp order.
 
-Goal extraction and markers share candidate evaluation. Heading comes from the
-entry-to-exit axis, query motion, or drone heading TF; unavailable heading rejects
-all candidates. Markers show tracks, candidate labels, gate links, and the selected
-goal. Geodetic discovery and response waiting share `geodetic_timeout` (default
-3 s), with conversions between `NavSatFix` and the bridge's `GeoPoint` messages.
+Goal extraction and markers share candidate evaluation. Heading comes from the entry-to-exit axis, query motion, or drone heading TF; unavailable heading rejects all candidates. Markers show tracks, candidate labels, gate links, and the selected goal. Geodetic discovery and response waiting share `geodetic_timeout` (default 3 s), with conversions between `NavSatFix` and the bridge's `GeoPoint` messages.
 
 ## RoboSub 2025
 
