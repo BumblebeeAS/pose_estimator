@@ -45,3 +45,17 @@ WINDOW_FRAME_REMAP = {
     "blue_window": "dockwin/blue",
     "null_window": "dockwin/null",
 }
+
+# RoboBuoy body bottom footprint, excluding floats and beacon.
+# Source: official RoboBuoy Build Guide, "RoboBuoy Side Panels" drawing:
+# https://robonation.gitbook.io/robotx-2026-team-handbook/robotx-2026-or-task-build-guides/robobuoy-build-guide#robobuoy-side-panels
+# Each panel's bottom edge is 17 inches; the four edges form the square base.
+BUOY_FOOTPRINT_WIDTH = 17.0 * 0.0254  # 0.4318 m
+# Centered origin at bottom footprint; +x right, +y down in a top-down view,
+# +z downward into the water. Corner order: TL, BL, BR, TR.
+BUOY_FOOTPRINT_OBJECT_POINTS = np.array([
+    [-BUOY_FOOTPRINT_WIDTH / 2, -BUOY_FOOTPRINT_WIDTH / 2, 0.0],
+    [-BUOY_FOOTPRINT_WIDTH / 2, BUOY_FOOTPRINT_WIDTH / 2, 0.0],
+    [BUOY_FOOTPRINT_WIDTH / 2, BUOY_FOOTPRINT_WIDTH / 2, 0.0],
+    [BUOY_FOOTPRINT_WIDTH / 2, -BUOY_FOOTPRINT_WIDTH / 2, 0.0],
+], dtype=np.float64)
