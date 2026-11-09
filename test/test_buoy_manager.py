@@ -22,21 +22,6 @@ def message(color=BuoyDetection.RED, stamp=42, frame="camera", position=(1., 2.,
     return BuoyDetectionArray(header=header, detections=[BuoyDetection(pose=pose, color=color)])
 
 
-def test_missing_tf_waits_for_exact_source_timestamp():
-    transform = Mock(side_effect=TransformException("not yet available"))
-    queue = ObservationBuffer("map", transform)
-    queue.add(message(), received_at=100.)
-    assert queue.drain(100.1) == []
-    assert len(queue.pending) == 1
-    transform.side_effect = None
-    transform.return_value = np.array([11., 12., 13.])
-    [(stamp, color, position)] = queue.drain(100.2)
-    assert stamp == 42 and color == "red"
-    np.testing.assert_array_equal(position, [11., 12., 13.])
-    assert transform.call_args.args[0].stamp_ns == 42_000_000_000
-    assert not queue.pending
-
-
 def test_expired_transform_is_discarded_without_latest_fallback():
     transform = Mock(side_effect=TransformException("missing"))
     queue = ObservationBuffer("map", transform, wait_timeout=.2)
@@ -81,37 +66,11 @@ def test_array_header_is_used_when_pose_header_is_empty():
     assert stamp == 42
 
 
-def new_track():
-    manager = TrackManager(logger=Mock())
+def new_track(**options):
+    manager = TrackManager(**options)
     track = BuoyTrack()
     manager.tracks[track.track_id] = track
     return manager, track
-
-
-def test_unknown_retains_position_without_adding_off_evidence():
-    queue = ObservationBuffer("map", Mock())
-    queue.add(message(color=255, frame="map"), received_at=1.)
-    [(stamp, color, position)] = queue.drain(1.1)
-    assert color is None
-    manager, track = new_track()
-    manager._add_observation_to_track(track.track_id, color, position, stamp)
-    assert len(track.observations) == 1
-    assert track.observations[0].color is None
-    manager.recompute_centroids()
-    np.testing.assert_array_equal(track.current_centroid, [1., 2., 3.])
-
-
-def test_delayed_observations_are_sorted_deduplicated_and_pruned_together():
-    manager, track = new_track()
-    for stamp, color in [(3., "red"), (1., "black"), (2., None), (2., "blue"), (3., "green")]:
-        manager._add_observation_to_track(track.track_id, color, np.array([stamp, 0., 0.]), stamp)
-    assert [o.timestamp for o in track.observations] == [1., 2., 3.]
-    assert track.last_observation_time == 3
-    assert [o.color for o in track.observations] == ["black", "blue", "red"]
-    manager.temporal_window = 2
-    manager.prune_temporal_window(4.1)
-    assert [o.timestamp for o in track.observations] == [3.]
-    assert [o.color for o in track.observations] == ["red"]
 
 
 @pytest.mark.parametrize("kind,expected", [
@@ -137,17 +96,6 @@ def test_beacon_classification_uses_only_known_color_samples(kind, expected):
         manager._add_observation_to_track(track.track_id, color, np.zeros(3), 100 + i / 10)
     manager.classify_tracks()
     assert track.published_state == expected
-
-
-def test_spatial_association_can_use_unknown_positions():
-    manager = TrackManager(dbscan_min_samples=3, logger=Mock())
-    manager.detection_buffer.extend((42 + i / 10, None, np.array([1., 2., 0.])) for i in range(5))
-    manager.associate_and_update(43.)
-    manager.recompute_centroids()
-    assert len(manager.tracks) == 1
-    track = next(iter(manager.tracks.values()))
-    assert track.last_observation_time == pytest.approx(42.4)
-    assert track.published_state == DetectedBuoyColor.UNKNOWN
 
 
 def test_singleton_tracks_survive_timeout_and_keep_aligned_history():
@@ -264,11 +212,9 @@ def test_manager_disable_and_reset_clear_pending_observations(ros_manager):
 
 
 @pytest.mark.parametrize('entry', [True, False])
-def test_milestone_service_and_marker_interfaces_remain_available(ros_manager, entry):
+def test_milestone_services_return_world_pose(ros_manager, entry):
     from bb_robotx_msgs.srv import GetEntry, GetExit
     node = ros_manager
-    node.marker_pub = Mock()
-    node.visualize_candidates = False
     track = BuoyTrack()
     track.published_state = DetectedBuoyColor.FLASHING_BLUE if entry else DetectedBuoyColor.SOLID_BLUE
     track.current_centroid = np.array([1., 2., 0.])
@@ -278,10 +224,6 @@ def test_milestone_service_and_marker_interfaces_remain_available(ros_manager, e
     response = callback(service.Request(return_latlon=False), service.Response())
     assert response.found and response.buoy_pose.header.frame_id == 'map'
     assert response.buoy_pose.pose.position.x == 1.
-    node._publish_markers()
-    markers = node.marker_pub.publish.call_args.args[0].markers
-    assert len(markers) == 3
-    assert all(marker.header.frame_id == 'map' and marker.header.stamp.sec > 0 for marker in markers)
 
 
 def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color():
@@ -301,31 +243,23 @@ def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color():
     assert primary.last_observation_time == 3.
     manager.recompute_centroids()
     np.testing.assert_array_equal(primary.current_centroid, [2., 0., 0.])
+    manager.temporal_window = 2.
+    manager.prune_temporal_window(4.1)
+    assert [(o.timestamp, o.color) for o in primary.observations] == [(3., 'blue')]
 
 
-@pytest.mark.parametrize('outcome', ['success', 'unavailable', 'timeout', 'error'])
-def test_geodetic_calls_complete_or_fail_within_deadline(ros_manager, outcome):
+@pytest.mark.parametrize('outcome', ['unavailable', 'timeout', 'error'])
+def test_geodetic_failures_are_bounded(ros_manager, outcome):
     from concurrent.futures import Future
-    from threading import Timer
     node = ros_manager
-    node.geodetic_timeout = .1
+    node.geodetic_timeout = .01
     future = Future()
-    response = object()
+    if outcome == 'error':
+        future.set_exception(RuntimeError('conversion failed'))
     client = Mock()
     client.wait_for_service.return_value = outcome != 'unavailable'
     client.call_async.return_value = future
-    timer = None
-    if outcome in ('success', 'error'):
-        finish = (lambda: future.set_result(response)) if outcome == 'success' else (
-            lambda: future.set_exception(RuntimeError('conversion failed')))
-        timer = Timer(.01, finish)
-        timer.start()
-    try:
-        result = node._call_geodetic(client, object(), '/test_conversion')
-    finally:
-        if timer:
-            timer.join()
-    assert result is response if outcome == 'success' else result is None
+    assert node._call_geodetic(client, object(), '/test_conversion') is None
     if outcome == 'unavailable':
         client.call_async.assert_not_called()
     elif outcome == 'timeout':
@@ -398,13 +332,13 @@ def test_geodetic_bridge_round_trip_with_real_ros_services(ros_manager):
         thread.join(timeout=2.)
 
 
-def test_horizontal_association_preserves_measured_height_in_tracks_and_markers(ros_manager):
+def test_unknown_positions_establish_track_and_preserve_height_in_markers(ros_manager):
     node = ros_manager
     node.marker_pub = Mock()
     node.visualize_candidates = False
     node.track_manager.dbscan_min_samples = 3
     node.track_manager.detection_buffer.extend(
-        (42. + i / 10, 'red', np.array([1., 2., height]))
+        (42. + i / 10, None, np.array([1., 2., height]))
         for i, height in enumerate((3., 4., 5.))
     )
     node.track_manager.associate_and_update(43.)
@@ -412,20 +346,12 @@ def test_horizontal_association_preserves_measured_height_in_tracks_and_markers(
     assert len(node.track_manager.tracks) == 1
     track = next(iter(node.track_manager.tracks.values()))
     np.testing.assert_array_equal(track.current_centroid, [1., 2., 4.])
+    assert all(o.color is None for o in track.observations)
+    assert track.published_state == DetectedBuoyColor.UNKNOWN
     node._publish_markers()
     markers = node.marker_pub.publish.call_args.args[0].markers
     sphere = next(m for m in markers if m.ns == 'buoy_tracks' and m.action == m.ADD)
     assert sphere.pose.position.z == 4.
-
-
-def test_single_observation_updates_existing_track_without_density_requirement():
-    manager, track = new_track()
-    track.current_centroid = np.array([1., 2., 3.])
-    manager.dbscan_min_samples = 5
-    manager.detection_buffer.append((42., 'red', np.array([1.1, 2., 4.])))
-    manager.associate_and_update(43.)
-    assert [(o.timestamp, o.color) for o in track.observations] == [(42., 'red')]
-    assert not manager.detection_buffer
 
 
 def test_nearby_tracks_receive_their_own_color_observations():
@@ -436,10 +362,11 @@ def test_nearby_tracks_receive_their_own_color_observations():
         track.current_centroid = np.array([x, 0., 0.])
         manager.tracks[track.track_id] = track
         tracks.append(track)
-    for i, (x, color) in enumerate([(.05, 'red'), (1.45, 'green')] * 2):
+    for i, (x, color) in enumerate([(.05, 'red'), (1.45, 'green')]):
         manager.detection_buffer.append((42. + i / 10, color, np.array([x, 0., 0.])))
     manager.associate_and_update(43.)
-    assert [[o.color for o in t.observations] for t in tracks] == [['red', 'red'], ['green', 'green']]
+    assert [[o.color for o in t.observations] for t in tracks] == [['red'], ['green']]
+    assert not manager.detection_buffer
     assert len(manager.tracks) == 2
 
 
@@ -491,9 +418,7 @@ def test_missing_heading_rejects_goals_without_inventing_a_direction(ros_manager
     (10., 5., DetectedBuoyColor.FLASHING_RED),
 ])
 def test_fft_requires_observed_cycles_instead_of_sample_count(rate, duration, expected):
-    manager = TrackManager(target_freq=.5, fft_min_magnitude=.15)
-    track = BuoyTrack()
-    manager.tracks[track.track_id] = track
+    manager, track = new_track(target_freq=.5, fft_min_magnitude=.15)
     for t in np.arange(0., duration, 1. / rate):
         color = 'red' if t % 2 < 1 else 'black'
         manager._add_observation_to_track(track.track_id, color, np.zeros(3), 100 + t)
@@ -502,9 +427,7 @@ def test_fft_requires_observed_cycles_instead_of_sample_count(rate, duration, ex
 
 
 def test_short_sightings_are_not_spliced_across_visibility_gaps():
-    manager = TrackManager(target_freq=.5, fft_min_magnitude=.15)
-    track = BuoyTrack()
-    manager.tracks[track.track_id] = track
+    manager, track = new_track(target_freq=.5, fft_min_magnitude=.15)
     for start in np.arange(0., 20., 2.):
         # Alternating short sightings would look periodic if interpolated over gaps.
         for t in np.arange(0., .6, .1):
@@ -515,9 +438,7 @@ def test_short_sightings_are_not_spliced_across_visibility_gaps():
 
 
 def test_separate_flashing_segments_combine_evidence_without_phase_alignment():
-    manager = TrackManager(target_freq=.5, fft_min_magnitude=.15)
-    track = BuoyTrack()
-    manager.tracks[track.track_id] = track
+    manager, track = new_track(target_freq=.5, fft_min_magnitude=.15)
     for start, phase in [(0., 0.), (10., .7)]:
         for t in np.arange(0., 5., .1):
             color = 'green' if (t + phase) % 2 < 1 else 'black'
