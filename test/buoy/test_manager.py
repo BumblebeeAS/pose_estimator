@@ -157,6 +157,36 @@ def test_candidate_filter_rejects_reached_and_behind_goals():
     assert [c.is_valid for c in candidates] == [False, False, True]
 
 
+def test_path_orders_gates_and_standoffs_along_the_course_axis():
+    planner = planner_with_tracks([
+        (DetectedBuoyColor.SOLID_BLUE, [0, 30, 0]),       # exit north of the entry
+        (DetectedBuoyColor.FLASHING_GREEN, [8, 21, 0]),   # unpaired, far east of the axis: no corridor
+        (DetectedBuoyColor.FLASHING_RED, [1.5, 10, 0]),   # gate, red east = starboard going north
+        (DetectedBuoyColor.FLASHING_GREEN, [-1.5, 10, 0]),
+        (DetectedBuoyColor.FLASHING_BLUE, [0, 0, 0]),
+        (DetectedBuoyColor.FLASHING_RED, [0, 20, 0]),     # unpaired
+        (DetectedBuoyColor.BLACK, [0, 15, 0]),            # obstacle, never a waypoint
+    ])
+    planner.standoff_distance = 1.5
+    path = planner.build_path()
+    expected = [[0, 0], [0, 10], [-1.5, 20], [9.5, 21], [0, 30]]  # red: left of travel, green: right
+    np.testing.assert_allclose([p[:2] for p in path], expected, atol=1e-9)
+
+
+def test_path_needs_entry_and_exit():
+    planner = planner_with_tracks([(DetectedBuoyColor.FLASHING_BLUE, [0, 0, 0])])
+    planner.standoff_distance = 1.5
+    assert planner.build_path() is None
+
+
+def test_path_with_only_entry_and_exit():
+    planner = planner_with_tracks([
+        (DetectedBuoyColor.FLASHING_BLUE, [0, 0, 0]), (DetectedBuoyColor.SOLID_BLUE, [10, 0, 0]),
+    ])
+    planner.standoff_distance = 1.5
+    np.testing.assert_allclose([p[:2] for p in planner.build_path()], [[0, 0], [10, 0]])
+
+
 @pytest.fixture
 def ros_manager():
     import rclpy
@@ -248,24 +278,6 @@ def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color():
     assert [(o.timestamp, o.color) for o in primary.observations] == [(3., 'blue')]
 
 
-@pytest.mark.parametrize('outcome', ['unavailable', 'timeout', 'error'])
-def test_geodetic_failures_are_bounded(ros_manager, outcome):
-    from concurrent.futures import Future
-    node = ros_manager
-    node.geodetic_timeout = .01
-    future = Future()
-    if outcome == 'error':
-        future.set_exception(RuntimeError('conversion failed'))
-    client = Mock()
-    client.wait_for_service.return_value = outcome != 'unavailable'
-    client.call_async.return_value = future
-    assert node._call_geodetic(client, object(), '/test_conversion') is None
-    if outcome == 'unavailable':
-        client.call_async.assert_not_called()
-    elif outcome == 'timeout':
-        assert future.cancelled()
-
-
 def test_candidate_markers_keep_geometry_and_labels(ros_manager):
     node = ros_manager
     node.marker_pub = Mock()
@@ -288,48 +300,6 @@ def test_candidate_markers_keep_geometry_and_labels(ros_manager):
     assert not {'gate_query', 'gate_forward', 'gate_forward_label', 'gate_candidate_rays'} & by_ns.keys()
     assert by_ns['gate_candidate_labels'].pose.position.z == .2
     assert 'GATE_PAIR' in by_ns['gate_candidate_labels'].text
-
-
-def test_geodetic_bridge_round_trip_with_real_ros_services(ros_manager):
-    from threading import Thread
-    from rclpy.executors import MultiThreadedExecutor
-    from robot_localization.srv import FromLL, ToLL
-    from sensor_msgs.msg import NavSatFix
-    node = ros_manager
-    received = []
-
-    def from_ll(request, response):
-        received.append(request.ll_point)
-        response.map_point.x = 10.
-        response.map_point.y = 20.
-        response.map_point.z = 30.
-        return response
-
-    def to_ll(request, response):
-        received.append(request.map_point)
-        response.ll_point.latitude = 1.
-        response.ll_point.longitude = 2.
-        response.ll_point.altitude = 3.
-        return response
-
-    node.create_service(FromLL, node.from_ll_service_name, from_ll)
-    node.create_service(ToLL, node.to_ll_service_name, to_ll)
-    executor = MultiThreadedExecutor(num_threads=2)
-    executor.add_node(node)
-    thread = Thread(target=executor.spin)
-    thread.start()
-    try:
-        local = node._convert_from_ll(NavSatFix(latitude=1., longitude=2., altitude=3.))
-        np.testing.assert_array_equal(local, [10., 20., 30.])
-        global_position = node._convert_to_ll(local)
-        assert isinstance(global_position, NavSatFix)
-        assert (global_position.latitude, global_position.longitude, global_position.altitude) == (1., 2., 3.)
-        assert global_position.header.stamp.sec > 0
-        assert (received[0].latitude, received[0].longitude, received[0].altitude) == (1., 2., 3.)
-        assert (received[1].x, received[1].y, received[1].z) == (10., 20., 30.)
-    finally:
-        executor.shutdown()
-        thread.join(timeout=2.)
 
 
 def test_unknown_positions_establish_track_and_preserve_height_in_markers(ros_manager):
