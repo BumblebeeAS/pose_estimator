@@ -28,7 +28,37 @@ Every matching detection is processed, including multiple buoys of the same colo
 
 Outputs are `buoy/detections` (`bb_robotx_msgs/BuoyDetectionArray`), `buoy/poses` (`geometry_msgs/PoseArray`), and `buoy/pose_labels` (`visualization_msgs/MarkerArray`). All poses and markers retain the source camera frame and detection timestamp, and positions refer to the bottom footprint center. Orientation is identity because unique yaw is unobserved. Color values are 0 off/BLACK, 1 red, 2 green, 3 blue, and 255 unknown. Failed estimates and invalid, behind-camera, or out-of-range positions are skipped; `max_range` defaults to 100 m. Empty frames publish empty pose arrays and a stamped marker clear. Text markers have per-frame IDs, matching colors, 0.15 m height, and a one-second lifetime.
 
-Configure `input_detections_topic`, `camera_info_topic`, `output_detections_topic`, `output_poses_topic`, and `output_pose_labels_topic` as needed. Common-frame conversion belongs downstream. When using `buoy_gate_manager_node`, set its `buoy_detections_topic` to the estimator's actual output topic and provide the TF tree needed for the manager's world-frame conversion. The gate manager itself is unchanged.
+Configure `input_detections_topic`, `camera_info_topic`, `output_detections_topic`, `output_poses_topic`, and `output_pose_labels_topic` as needed. Common-frame conversion belongs downstream. When using `buoy_gate_manager_node`, set its `buoy_detections_topic` to the estimator's actual output topic and provide the TF tree needed for the manager's world-frame conversion. The manager owns observation-time transforms, tracking, temporal beacon classification, and gate queries.
+
+### Buoy gate manager
+
+`buoy_gate_manager_node` separates ROS services from observation buffering,
+tracking, goal planning, and marker rendering in `utils/buoy_*.py`. Collection
+starts disabled. Enable or freeze it with `set_gate_manager_state`; freezing
+processes ready observations, logs a `BUOY_SEARCH_FROZEN` track summary, and
+clears pending input. `reset_tracks` clears tracks and query history.
+
+Observations use their pose header, falling back to the array header. The manager
+waits for TF at the source timestamp (`tf_wait_timeout`: 0.25 s,
+`max_pending_observations`: 1000), dropping invalid, expired, or overflowed input.
+Set `input_odom_topic` to build motion transforms from odometry and listen only
+to static TF; leave it empty to use the normal TF listener. Association uses XY
+distance while retaining measured height. Observations update the nearest track
+within `max_association_radius`; unmatched samples accumulate for DBSCAN.
+
+Color 255 contributes position without OFF evidence. Classification requires
+`required_density` known-color coverage and splits sightings at `max_color_gap`
+(default 0.5 s). Each segment must span `min_flash_cycles` (default two) and have
+enough resampled points for filtering. Duration-weighted FFT evidence combines
+qualifying segments without interpolating across visibility gaps. Insufficient
+evidence retains the previous state. Blue entry and exit tracks survive timeouts
+and merge duplicate histories in timestamp order.
+
+Goal extraction and markers share candidate evaluation. Heading comes from the
+entry-to-exit axis, query motion, or drone heading TF; unavailable heading rejects
+all candidates. Markers show tracks, candidate labels, gate links, and the selected
+goal. Geodetic discovery and response waiting share `geodetic_timeout` (default
+3 s), with conversions between `NavSatFix` and the bridge's `GeoPoint` messages.
 
 ## RoboSub 2025
 
