@@ -9,6 +9,7 @@ from geometry_msgs.msg import Transform
 from image_processing.utils.image_annotations import get_image_annotations
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
+from frames.utils.sync_diagnostics import SyncDiagnostics
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from rclpy.wait_for_message import wait_for_message
@@ -90,6 +91,7 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
             queue_size=100,
             slop=0.1,
         )
+        self.sync_diagnostics = SyncDiagnostics(self)
         self.time_sync.registerCallback(self.detections_callback)
 
         # Debug annotations publisher
@@ -125,6 +127,7 @@ class HelipadPoseEstimator(PoseEstimatorSinglePosePubNode):
     def detections_callback(
         self, detections_msg: DetectionArray, odom_ned_msg: Odometry
     ):
+        self.sync_diagnostics.record(detections_msg, odom_ned_msg, 'detections_to_odometry')
         if not self.is_setup:
             self.get_logger().info("Setting up helipad pose estimator.")
             success, base_link_to_camera_tf = self.get_base_link_to_camera_transform()
