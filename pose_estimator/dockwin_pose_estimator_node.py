@@ -146,6 +146,41 @@ def create_standoff_pose(
     return target
 
 
+def window_centre_pose(
+    window_pose: PoseStamped,
+    window_width: float,
+    window_height: float,
+) -> Optional[PoseStamped]:
+    """The window's centre with the PnP window axes, or None if it faces away.
+
+    The PnP origin is the top-left corner (+x right, +y down the window, +z the
+    plane normal). The centre keeps those axes, so +z points into the window,
+    away from the camera; a pose whose +z points back at the camera (a
+    degenerate PnP solution) returns None rather than a flipped frame.
+    """
+    if not (math.isfinite(window_width) and window_width > 0.0):
+        raise ValueError("window_width must be finite and positive")
+    if not (math.isfinite(window_height) and window_height > 0.0):
+        raise ValueError("window_height must be finite and positive")
+    rotation = _quaternion_matrix(window_pose.pose.orientation)
+    origin = np.array(
+        [
+            window_pose.pose.position.x,
+            window_pose.pose.position.y,
+            window_pose.pose.position.z,
+        ],
+        dtype=float,
+    )
+    centre = origin + rotation[:, 0] * (window_width / 2.0)
+    centre += rotation[:, 1] * (window_height / 2.0)
+    # The camera sits at the optical frame origin: +z must point away from it.
+    if float(np.dot(rotation[:, 2], centre)) <= 0.0:
+        return None
+    target = copy.deepcopy(window_pose)
+    target.pose.position = Point(x=float(centre[0]), y=float(centre[1]), z=float(centre[2]))
+    return target
+
+
 def is_lower_window_pose(
     window_pose: PoseStamped,
     y_threshold: float = 0.0,
@@ -299,6 +334,15 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         )
         if not self.standoff_pose_topic.strip():
             raise ValueError("standoff_pose_topic must not be empty")
+        # Lower-window centre for the firefighting tree, which clusters it and
+        # hangs its standoff-hold TF off it (mission_planner_2 cfg/asv5/single_tfs.yaml).
+        self.lower_window_pose_topic = (
+            self.declare_parameter("lower_window_pose_topic", "dockwin/lower_window/pose")
+            .get_parameter_value()
+            .string_value
+        )
+        if not self.lower_window_pose_topic.strip():
+            raise ValueError("lower_window_pose_topic must not be empty")
 
         detections_topic = (
             self.declare_parameter("input_detections_topic", "yolo/detections")
@@ -351,6 +395,9 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         }
         self._standoff_pose_publisher = self.create_publisher(
             PoseStamped, self.standoff_pose_topic, qos_profile_sensor_data
+        )
+        self._lower_window_pose_publisher = self.create_publisher(
+            PoseStamped, self.lower_window_pose_topic, qos_profile_sensor_data
         )
         self._filtered_tvecs = {}
 
@@ -530,7 +577,8 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         depth_img: Optional[np.ndarray],
         single_visible_window: bool,
     ) -> None:
-        """Publish the standoff for the lower window the firefighting tree holds at.
+        """Publish the lower window the firefighting tree holds at: its centre
+        pose on ``lower_window_pose_topic`` and the derived standoff pose.
 
         The lower window is chosen from all visible windows (not just the best
         per class) by image row; see ``select_lower_window_detection``. When
@@ -563,6 +611,14 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         points = self.object_points[class_name]
         window_width = float(np.max(points[:, 0]) - np.min(points[:, 0]))
         window_height = float(np.max(points[:, 1]) - np.min(points[:, 1]))
+        centre_pose = window_centre_pose(pose, window_width, window_height)
+        if centre_pose is None:
+            self.get_logger().warning(
+                f"Lower window {object_frame_id} pose faces the camera; not publishing it",
+                throttle_duration_sec=5.0,
+            )
+        else:
+            self._lower_window_pose_publisher.publish(centre_pose)
         try:
             standoff_pose = create_standoff_pose(
                 pose, self.standoff_distance, window_width, window_height

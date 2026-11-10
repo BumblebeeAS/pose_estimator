@@ -6,6 +6,7 @@ from pose_estimator.dockwin_pose_estimator_node import (
     create_standoff_pose,
     is_lower_window_pose,
     select_lower_window_detection,
+    window_centre_pose,
 )
 from yolo_msgs.msg import Detection
 
@@ -125,3 +126,41 @@ def test_single_row_is_not_distinguished():
 def test_no_windows_selects_nothing():
     assert select_lower_window_detection([], image_center_x=320.0) == (None, False)
 
+
+def _window(z=3.0, yaw_deg=0.0):
+    """Window corner pose in the optical frame, rotated about the optical y axis."""
+    window = PoseStamped()
+    window.header.frame_id = "asv5/oakd_link_optical"
+    window.pose.position.z = z
+    half = np.radians(yaw_deg) / 2.0
+    window.pose.orientation.y = float(np.sin(half))
+    window.pose.orientation.w = float(np.cos(half))
+    return window
+
+
+def test_window_centre_pose_keeps_axes_and_moves_to_centre():
+    window = _window(yaw_deg=20.0)
+    centre = window_centre_pose(window, 0.28, 0.36)
+
+    rotation = _quaternion_matrix(window.pose.orientation)
+    expected = np.array([0.0, 0.0, 3.0]) + rotation[:, 0] * 0.14 + rotation[:, 1] * 0.18
+    got = np.array([centre.pose.position.x, centre.pose.position.y, centre.pose.position.z])
+    assert np.allclose(got, expected)
+    assert centre.pose.orientation == window.pose.orientation
+    assert centre.header.frame_id == window.header.frame_id
+
+
+def test_window_centre_pose_rejects_window_facing_the_camera():
+    # Rotated 180 deg about y: +z points back at the camera.
+    assert window_centre_pose(_window(yaw_deg=180.0), 0.28, 0.36) is None
+
+
+def test_standoff_is_on_the_centre_normal():
+    window = _window(yaw_deg=-25.0)
+    centre = window_centre_pose(window, 0.28, 0.36)
+    standoff = create_standoff_pose(window, 2.5, 0.28, 0.36)
+
+    normal = _quaternion_matrix(centre.pose.orientation)[:, 2]
+    c = np.array([centre.pose.position.x, centre.pose.position.y, centre.pose.position.z])
+    st = np.array([standoff.pose.position.x, standoff.pose.position.y, standoff.pose.position.z])
+    assert np.allclose(st, c - 2.5 * normal)
