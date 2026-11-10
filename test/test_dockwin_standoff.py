@@ -5,7 +5,9 @@ from pose_estimator.dockwin_pose_estimator_node import (
     _quaternion_matrix,
     create_standoff_pose,
     is_lower_window_pose,
+    select_lower_window_detection,
 )
+from yolo_msgs.msg import Detection
 
 
 def test_standoff_pose_is_centered_and_faces_window():
@@ -69,3 +71,57 @@ def test_single_visible_window_can_be_assumed_lower():
     assert is_lower_window_pose(
         pose, y_threshold=0.0, single_visible_window=True
     )
+
+
+def _det(u, v, score=0.9, cls="null_window", h=60.0):
+    d = Detection()
+    d.class_name = cls
+    d.score = score
+    d.bbox.center.position.x = float(u)
+    d.bbox.center.position.y = float(v)
+    d.bbox.size.x = 50.0
+    d.bbox.size.y = h
+    return d
+
+
+def test_lower_window_is_bottom_row_even_when_all_above_optical_axis():
+    # 2x2 grid entirely in the top of a 640x400 image (camera below the dock).
+    upper_l, upper_r = _det(250, 60, 0.95), _det(390, 62, 0.95, "red_window")
+    lower_l, lower_r = _det(252, 150, 0.90), _det(388, 148, 0.93)
+    chosen, rows = select_lower_window_detection(
+        [upper_l, upper_r, lower_l, lower_r], image_center_x=320.0
+    )
+    assert rows
+    assert chosen in (lower_l, lower_r)
+
+
+def test_lower_window_prefers_bottom_row_window_nearest_image_centre():
+    left, centre, right = _det(100, 200), _det(330, 205), _det(560, 198)
+    upper = _det(330, 80, 0.99)
+    chosen, rows = select_lower_window_detection(
+        [upper, left, centre, right], image_center_x=320.0
+    )
+    assert rows
+    assert chosen is centre
+
+
+def test_lower_window_falls_back_to_score_without_image_centre():
+    a, b = _det(100, 200, 0.6), _det(500, 205, 0.8)
+    chosen, rows = select_lower_window_detection([_det(300, 50), a, b])
+    assert rows
+    assert chosen is b
+
+
+def test_single_row_is_not_distinguished():
+    a, b = _det(200, 150), _det(400, 160)
+    chosen, rows = select_lower_window_detection([a, b], image_center_x=320.0)
+    assert not rows
+    assert chosen in (a, b)
+
+    only, rows = select_lower_window_detection([a], image_center_x=320.0)
+    assert only is a and not rows
+
+
+def test_no_windows_selects_nothing():
+    assert select_lower_window_detection([], image_center_x=320.0) == (None, False)
+

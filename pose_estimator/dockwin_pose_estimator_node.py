@@ -164,6 +164,41 @@ def is_lower_window_pose(
     return math.isfinite(y_threshold) and y >= y_threshold
 
 
+def select_lower_window_detection(
+    detections: list[Detection],
+    image_center_x: Optional[float] = None,
+    row_tolerance: float = 0.5,
+) -> tuple[Optional[Detection], bool]:
+    """Pick the lower window to hold at from all visible window detections.
+
+    Windows are grouped into image rows by bbox centre v (+v points down). When
+    more than one row is visible, the bottom row is the lower row regardless of
+    camera height, range or pitch. Within the bottom row, the window
+    horizontally closest to ``image_center_x`` (the slip being faced) wins; with
+    no usable centre, the highest score wins.
+
+    Returns ``(detection, rows_distinguished)``. ``rows_distinguished`` is False
+    when every visible window is in one row, so upper vs lower cannot be told
+    from the image and the caller should fall back to ``is_lower_window_pose``.
+    """
+    if not detections:
+        return None, False
+    lowest = max(detections, key=lambda d: d.bbox.center.position.y)
+    lowest_v = float(lowest.bbox.center.position.y)
+    tolerance = row_tolerance * max(float(lowest.bbox.size.y), 1.0)
+    bottom_row = [
+        d for d in detections if d.bbox.center.position.y >= lowest_v - tolerance
+    ]
+    rows_distinguished = len(bottom_row) < len(detections)
+    if image_center_x is not None and math.isfinite(image_center_x):
+        def key(d):
+            return (abs(d.bbox.center.position.x - image_center_x), -d.score)
+    else:
+        def key(d):
+            return -d.score
+    return min(bottom_row, key=key), rows_distinguished
+
+
 def _polygon_to_binary_mask(
     polygon: np.ndarray, resolution_wh: tuple[int, int]
 ) -> np.ndarray:
@@ -380,45 +415,25 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         best_detections = get_best_detections_per_class(
             filtered_detections, self.input_detection_classes
         )
-        visible_window_count = sum(
-            detection.class_name in self.input_detection_classes
+        window_detections = [
+            detection
             for detection in filtered_detections.detections
-        )
+            if detection.class_name in self.input_detection_classes
+        ]
         single_visible_window = (
             self.assume_single_visible_window_is_lower
-            and visible_window_count == 1
+            and len(window_detections) == 1
         )
 
+        # Per-class window poses (best detection of each class), as before.
+        # Keyed by id(detection) so the standoff can reuse a pose already
+        # computed for the same detection.
+        published_poses: dict[int, PoseStamped] = {}
         for class_name, detection in best_detections.items():
-            try:
-                if self.estimation_method == "best_fit_quad":
-                    rvec, tvec = self._estimate_with_best_fit_quad(
-                        class_name, detection
-                    )
-                else:
-                    rvec, tvec = self._estimate_with_oriented_quad(
-                        class_name, detection
-                    )
-            except Exception as exc:
-                self.get_logger().warn(
-                    f"Pose estimation failed for {class_name}: {exc}"
-                )
+            estimate = self._estimate_detection_pose(class_name, detection, depth_img)
+            if estimate is None:
                 continue
-
-            if depth_img is not None and self.use_depth_image:
-                measured_depth = self._extract_mask_depth(depth_img, detection)
-                if np.isfinite(measured_depth) and measured_depth > 0.0:
-                    tvec = self._refine_translation_with_depth(
-                        detection, tvec, measured_depth
-                    )
-
-            depth = float(tvec[2, 0])
-            if not np.isfinite(depth) or depth <= 0.0:
-                self.get_logger().warn(
-                    f"Rejecting {class_name} pose with invalid depth: {depth:.3f} m"
-                )
-                continue
-
+            rvec, tvec = estimate
             tvec = self._filter_translation(class_name, tvec)
             frame_name = self.frame_name_remap[class_name]
             object_points = np.hstack(
@@ -429,32 +444,60 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
                     ),
                 ]
             )
-            self.publish_data(
-                tvec,
-                rvec,
-                object_points,
-                msg.header,
-                frame_name,
-                single_visible_window=single_visible_window,
+            pose = self.publish_data(
+                tvec, rvec, object_points, msg.header, frame_name
             )
+            if pose is not None:
+                published_poses[id(detection)] = pose
 
-    def publish_data(
+        self._publish_lower_window_standoff(
+            window_detections,
+            published_poses,
+            msg.header,
+            depth_img,
+            single_visible_window,
+        )
+
+    def _estimate_detection_pose(
         self,
-        tvec: np.ndarray,
-        rvec: np.ndarray,
-        object_points: np.ndarray,
-        header,
-        object_frame_id: str,
-        single_visible_window: bool = False,
-    ) -> None:
+        class_name: str,
+        detection: Detection,
+        depth_img: Optional[np.ndarray] = None,
+    ) -> Optional[tuple[np.ndarray, np.ndarray]]:
+        """PnP (+ optional depth) pose for one detection, or None if unusable."""
+        try:
+            if self.estimation_method == "best_fit_quad":
+                rvec, tvec = self._estimate_with_best_fit_quad(class_name, detection)
+            else:
+                rvec, tvec = self._estimate_with_oriented_quad(class_name, detection)
+        except Exception as exc:
+            self.get_logger().warn(f"Pose estimation failed for {class_name}: {exc}")
+            return None
+
+        if depth_img is not None and self.use_depth_image:
+            measured_depth = self._extract_mask_depth(depth_img, detection)
+            if np.isfinite(measured_depth) and measured_depth > 0.0:
+                tvec = self._refine_translation_with_depth(
+                    detection, tvec, measured_depth
+                )
+
+        depth = float(tvec[2, 0])
+        if not np.isfinite(depth) or depth <= 0.0:
+            self.get_logger().warn(
+                f"Rejecting {class_name} pose with invalid depth: {depth:.3f} m"
+            )
+            return None
+        return rvec, tvec
+
+    def _make_pose(self, tvec: np.ndarray, rvec: np.ndarray, header) -> Optional[PoseStamped]:
         try:
             t, q = get_translation_quaternion(tvec, rvec)
         except np.linalg.LinAlgError as e:
             self.get_logger().warn(f"Error in mat2quat, failed to convert R: {e}")
-            return
+            return None
         except Exception as e:
             self.get_logger().warn(f"Rodrigues conversion failed: {e}")
-            return
+            return None
 
         pose = PoseStamped()
         pose.header = header
@@ -464,19 +507,59 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         pose.pose.orientation = Quaternion(
             x=float(q[0]), y=float(q[1]), z=float(q[2]), w=float(q[3])
         )
-        self.pose_publishers[object_frame_id].publish(pose)
-        # The firefighting hold is specifically for the lower window. In the
-        # camera optical frame, positive Y points down, matching the tree's
-        # existing upper/lower report selection rule.
-        if not is_lower_window_pose(
+        return pose
+
+    def publish_data(
+        self,
+        tvec: np.ndarray,
+        rvec: np.ndarray,
+        object_points: np.ndarray,
+        header,
+        object_frame_id: str,
+    ) -> Optional[PoseStamped]:
+        pose = self._make_pose(tvec, rvec, header)
+        if pose is not None:
+            self.pose_publishers[object_frame_id].publish(pose)
+        return pose
+
+    def _publish_lower_window_standoff(
+        self,
+        window_detections: list[Detection],
+        published_poses: dict[int, PoseStamped],
+        header,
+        depth_img: Optional[np.ndarray],
+        single_visible_window: bool,
+    ) -> None:
+        """Publish the standoff for the lower window the firefighting tree holds at.
+
+        The lower window is chosen from all visible windows (not just the best
+        per class) by image row; see ``select_lower_window_detection``. When
+        only one row is visible, fall back to the optical-frame Y rule.
+        """
+        detection, rows_distinguished = select_lower_window_detection(
+            window_detections, image_center_x=float(self.camera.cx)
+        )
+        if detection is None:
+            return
+        class_name = detection.class_name
+        pose = published_poses.get(id(detection))
+        if pose is None:
+            estimate = self._estimate_detection_pose(class_name, detection, depth_img)
+            if estimate is None:
+                return
+            pose = self._make_pose(estimate[1], estimate[0], header)
+            if pose is None:
+                return
+        # Single row visible: can't tell upper from lower in the image, so use
+        # the camera optical frame rule (+Y points down), matching the tree's
+        # existing upper/lower report selection.
+        if not rows_distinguished and not is_lower_window_pose(
             pose,
             self.lower_window_y_threshold,
             single_visible_window=single_visible_window,
         ):
             return
-        class_name = next(
-            key for key, value in self.frame_name_remap.items() if value == object_frame_id
-        )
+        object_frame_id = self.frame_name_remap[class_name]
         points = self.object_points[class_name]
         window_width = float(np.max(points[:, 0]) - np.min(points[:, 0]))
         window_height = float(np.max(points[:, 1]) - np.min(points[:, 1]))
