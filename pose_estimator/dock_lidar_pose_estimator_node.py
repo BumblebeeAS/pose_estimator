@@ -127,9 +127,9 @@ class DockPoseEstimator(LifecycleNode):
         )
 
         # YOLO ROI: the template is only searched around the best BEV YOLO
-        # box. An empty topic searches the whole BEV every frame.
+        # box. An empty topic (default) searches the whole BEV every frame.
         self.detections_topic = self.declare_parameter(
-            "input_detections_topic", "/asv5/bev/yolo/detections"
+            "input_detections_topic", ""
         ).value
         # Slack around the box the template may extend into (m).
         self.roi_padding_m = float(
