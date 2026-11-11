@@ -203,6 +203,7 @@ def select_lower_window_detection(
     detections: list[Detection],
     image_center_x: Optional[float] = None,
     row_tolerance: float = 0.5,
+    max_column_distance: Optional[float] = None,
 ) -> tuple[Optional[Detection], bool]:
     """Pick the lower window to hold at from all visible window detections.
 
@@ -211,6 +212,10 @@ def select_lower_window_detection(
     camera height, range or pitch. Within the bottom row, the window
     horizontally closest to ``image_center_x`` (the slip being faced) wins; with
     no usable centre, the highest score wins.
+
+    When ``max_column_distance`` is set, bottom-row windows whose bbox centre is
+    farther than this many pixels from ``image_center_x`` are excluded, so that
+    a lower window from an adjacent dock bay is not selected.
 
     Returns ``(detection, rows_distinguished)``. ``rows_distinguished`` is False
     when every visible window is in one row, so upper vs lower cannot be told
@@ -225,6 +230,21 @@ def select_lower_window_detection(
         d for d in detections if d.bbox.center.position.y >= lowest_v - tolerance
     ]
     rows_distinguished = len(bottom_row) < len(detections)
+    # Hard horizontal filter: exclude windows from adjacent dock bays.
+    if (
+        max_column_distance is not None
+        and max_column_distance > 0.0
+        and image_center_x is not None
+        and math.isfinite(image_center_x)
+    ):
+        column_filtered = [
+            d for d in bottom_row
+            if abs(d.bbox.center.position.x - image_center_x) <= max_column_distance
+        ]
+        if column_filtered:
+            bottom_row = column_filtered
+        else:
+            return None, rows_distinguished
     if image_center_x is not None and math.isfinite(image_center_x):
         def key(d):
             return (abs(d.bbox.center.position.x - image_center_x), -d.score)
@@ -400,6 +420,32 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
             PoseStamped, self.lower_window_pose_topic, qos_profile_sensor_data
         )
         self._filtered_tvecs = {}
+        self._target_bay_center_x: Optional[float] = None
+
+        self.target_window_classes = list(
+            self.declare_parameter(
+                "target_window_classes", ["red_window", "green_window", "blue_window"]
+            )
+            .get_parameter_value()
+            .string_array_value
+        )
+        # Backward compatibility if target_window_class string parameter is provided
+        self.declare_parameter("target_window_class", "")
+        single_target = (
+            self.get_parameter("target_window_class")
+            .get_parameter_value()
+            .string_value
+        )
+        if single_target and single_target not in self.target_window_classes:
+            self.target_window_classes.insert(0, single_target)
+
+        self.max_column_distance = (
+            self.declare_parameter("max_column_distance", 0.0)
+            .get_parameter_value()
+            .double_value
+        )
+        if self.max_column_distance < 0.0:
+            raise ValueError("max_column_distance must be non-negative")
 
         if self.use_depth_image and self.input_depth_image_topic:
             self.cv_bridge = CvBridge()
@@ -467,6 +513,36 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
             for detection in filtered_detections.detections
             if detection.class_name in self.input_detection_classes
         ]
+        # Latch or update the horizontal pixel position of the targeted dock bay
+        # so select_lower_window_detection can exclude adjacent-bay windows.
+        # target_window_classes (e.g. ["red_window", "green_window"]) are checked
+        # in priority order. When red turns off and green activates post-extinguish,
+        # green continues tracking the bay column rather than relying on a stale x.
+        target_det = None
+        for cls in self.target_window_classes:
+            matching = [
+                d for d in filtered_detections.detections if d.class_name == cls
+            ]
+            if not matching:
+                continue
+            if self._target_bay_center_x is not None:
+                if self.max_column_distance > 0.0:
+                    in_column = [
+                        d for d in matching
+                        if abs(d.bbox.center.position.x - self._target_bay_center_x) <= self.max_column_distance
+                    ]
+                    if in_column:
+                        matching = in_column
+                target_det = min(
+                    matching,
+                    key=lambda d: abs(d.bbox.center.position.x - self._target_bay_center_x)
+                )
+            else:
+                target_det = max(matching, key=lambda d: d.score)
+            break
+
+        if target_det is not None:
+            self._target_bay_center_x = float(target_det.bbox.center.position.x)
         single_visible_window = (
             self.assume_single_visible_window_is_lower
             and len(window_detections) == 1
@@ -583,9 +659,23 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         The lower window is chosen from all visible windows (not just the best
         per class) by image row; see ``select_lower_window_detection``. When
         only one row is visible, fall back to the optical-frame Y rule.
+
+        When ``_target_bay_center_x`` has been latched (from the target window
+        class), it replaces the fixed camera ``cx`` as the horizontal anchor and
+        ``max_column_distance`` applies as a hard cutoff to reject windows from
+        adjacent dock bays.
         """
+        # Use the latched target bay x when available; fall back to camera cx.
+        ref_x = (
+            self._target_bay_center_x
+            if self._target_bay_center_x is not None
+            else float(self.camera.cx)
+        )
+        col_dist = self.max_column_distance if self.max_column_distance > 0.0 else None
         detection, rows_distinguished = select_lower_window_detection(
-            window_detections, image_center_x=float(self.camera.cx)
+            window_detections,
+            image_center_x=ref_x,
+            max_column_distance=col_dist,
         )
         if detection is None:
             return

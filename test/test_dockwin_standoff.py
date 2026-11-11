@@ -127,6 +127,51 @@ def test_no_windows_selects_nothing():
     assert select_lower_window_detection([], image_center_x=320.0) == (None, False)
 
 
+def test_column_distance_excludes_adjacent_bay_window():
+    """Bottom row has windows from two bays; only the one within column distance wins."""
+    target_bay = _det(300, 200, 0.8, cls="red_window")    # target bay lower
+    adjacent_bay = _det(550, 205, 0.95, cls="null_window")  # adjacent bay lower, higher score
+    upper = _det(310, 80, 0.9)
+    chosen, rows = select_lower_window_detection(
+        [upper, target_bay, adjacent_bay],
+        image_center_x=300.0,
+        max_column_distance=100.0,
+    )
+    assert rows
+    assert chosen is target_bay
+
+
+def test_column_distance_all_excluded_returns_none():
+    """When every bottom-row window is outside the column distance, return None."""
+    far_left = _det(50, 200, 0.9)
+    far_right = _det(600, 205, 0.95)
+    upper = _det(320, 80, 0.8)
+    chosen, rows = select_lower_window_detection(
+        [upper, far_left, far_right],
+        image_center_x=320.0,
+        max_column_distance=50.0,
+    )
+    assert chosen is None
+    assert rows  # rows were distinguished even though column filter emptied it
+
+
+def test_column_distance_none_preserves_existing_behaviour():
+    """With max_column_distance=None, the farthest window can still win by score."""
+    near = _det(310, 200, 0.5)
+    far = _det(550, 205, 0.95)
+    upper = _det(320, 80, 0.8)
+    # Without column filter, nearest to image_center_x wins (soft tiebreaker).
+    chosen_no_filter, _ = select_lower_window_detection(
+        [upper, near, far], image_center_x=320.0, max_column_distance=None,
+    )
+    assert chosen_no_filter is near
+    # Without image_center_x, highest score wins — far has 0.95.
+    chosen_by_score, _ = select_lower_window_detection(
+        [upper, near, far], image_center_x=None, max_column_distance=None,
+    )
+    assert chosen_by_score is far
+
+
 def _window(z=3.0, yaw_deg=0.0):
     """Window corner pose in the optical frame, rotated about the optical y axis."""
     window = PoseStamped()
