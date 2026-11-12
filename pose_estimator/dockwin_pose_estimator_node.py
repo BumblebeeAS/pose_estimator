@@ -791,12 +791,14 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         self._standoff_pose_publisher.publish(standoff_pose)
 
         # 3. Classify target red window ID (1 = upper, 2 = lower)
+        # A lone visible window is assumed lower (single_visible_window), so a
+        # red upper window would read as 2: keep the last multi-window result.
         red_detections = [d for d in window_detections if d.class_name == "red_window"]
-        if red_detections:
+        if red_detections and not single_visible_window:
             red_det = red_detections[0]
-            if lower_det is not None and id(lower_det) == id(red_det):
+            if detection is not None and id(detection) == id(red_det):
                 self._detected_target_window_id = 2
-            elif rows_distinguished and lower_det is not None:
+            elif rows_distinguished and detection is not None:
                 self._detected_target_window_id = 1
             else:
                 red_pose = published_poses.get(id(red_det))
