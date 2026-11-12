@@ -10,9 +10,13 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
+from std_srvs.srv import Trigger
 from yolo_msgs.msg import Detection, DetectionArray
 
 from pose_estimator.config.robotx26_object_points import (
+    UPPER_FROM_LOWER_WINDOW_DX,
+    UPPER_FROM_LOWER_WINDOW_DY,
+    UPPER_FROM_LOWER_WINDOW_DZ,
     WINDOW_FRAME_REMAP,
     WINDOW_OBJECT_POINTS_DICT,
 )
@@ -178,6 +182,37 @@ def window_centre_pose(
         return None
     target = copy.deepcopy(window_pose)
     target.pose.position = Point(x=float(centre[0]), y=float(centre[1]), z=float(centre[2]))
+    return target
+
+
+def compute_upper_window_pose(
+    lower_window_pose: PoseStamped,
+    dx: float = UPPER_FROM_LOWER_WINDOW_DX,
+    dy: float = UPPER_FROM_LOWER_WINDOW_DY,
+    dz: float = UPPER_FROM_LOWER_WINDOW_DZ,
+) -> PoseStamped:
+    """Compute the upper window pose from the lower window pose using the build spec transform.
+
+    In the window frame (+x rightwards along the board, +y downwards along the board, +z into the board):
+    The upper window's top-left corner is offset from the lower window's top-left corner by:
+    - dx = -0.440 m (440 mm to the left)
+    - dy = -0.250 m (250 mm higher up, negative in +y down convention)
+    - dz = 0.0 m (coplanar on the board)
+    """
+    rotation = _quaternion_matrix(lower_window_pose.pose.orientation)
+    origin = np.array(
+        [
+            lower_window_pose.pose.position.x,
+            lower_window_pose.pose.position.y,
+            lower_window_pose.pose.position.z,
+        ],
+        dtype=float,
+    )
+    upper_pos = origin + rotation[:, 0] * dx + rotation[:, 1] * dy + rotation[:, 2] * dz
+    target = copy.deepcopy(lower_window_pose)
+    target.pose.position = Point(
+        x=float(upper_pos[0]), y=float(upper_pos[1]), z=float(upper_pos[2])
+    )
     return target
 
 
@@ -354,8 +389,7 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         )
         if not self.standoff_pose_topic.strip():
             raise ValueError("standoff_pose_topic must not be empty")
-        # Lower-window centre for the firefighting tree, which clusters it and
-        # hangs its standoff-hold TF off it (mission_planner_2 cfg/asv5/single_tfs.yaml).
+        # Lower-window pose (top-left origin) for firefighting standoff and targeting.
         self.lower_window_pose_topic = (
             self.declare_parameter("lower_window_pose_topic", "dockwin/lower_window/pose")
             .get_parameter_value()
@@ -363,6 +397,15 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         )
         if not self.lower_window_pose_topic.strip():
             raise ValueError("lower_window_pose_topic must not be empty")
+
+        # Upper-window pose computed from lower-window via known build spec transform.
+        self.upper_window_pose_topic = (
+            self.declare_parameter("upper_window_pose_topic", "dockwin/upper_window/pose")
+            .get_parameter_value()
+            .string_value
+        )
+        if not self.upper_window_pose_topic.strip():
+            raise ValueError("upper_window_pose_topic must not be empty")
 
         detections_topic = (
             self.declare_parameter("input_detections_topic", "yolo/detections")
@@ -419,8 +462,28 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         self._lower_window_pose_publisher = self.create_publisher(
             PoseStamped, self.lower_window_pose_topic, qos_profile_sensor_data
         )
+        self._upper_window_pose_publisher = self.create_publisher(
+            PoseStamped, self.upper_window_pose_topic, qos_profile_sensor_data
+        )
         self._filtered_tvecs = {}
         self._target_bay_center_x: Optional[float] = None
+        self._detected_target_window_id: Optional[int] = None
+
+        self.target_window_id_service_topic = (
+            self.declare_parameter("target_window_id_service_topic", "~/get_target_window_id")
+            .get_parameter_value()
+            .string_value
+        )
+        self.default_target_window_id = (
+            self.declare_parameter("default_target_window_id", 1)
+            .get_parameter_value()
+            .integer_value
+        )
+        self._target_window_id_service = self.create_service(
+            Trigger,
+            self.target_window_id_service_topic,
+            self._get_target_window_id_callback,
+        )
 
         self.target_window_classes = list(
             self.declare_parameter(
@@ -653,8 +716,9 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
         depth_img: Optional[np.ndarray],
         single_visible_window: bool,
     ) -> None:
-        """Publish the lower window the firefighting tree holds at: its centre
-        pose on ``lower_window_pose_topic`` and the derived standoff pose.
+        """Publish the lower window the firefighting tree holds at: its top-left
+        pose on ``lower_window_pose_topic``, the derived upper-window pose on
+        ``upper_window_pose_topic``, and the derived standoff pose.
 
         The lower window is chosen from all visible windows (not just the best
         per class) by image row; see ``select_lower_window_detection``. When
@@ -707,8 +771,14 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
                 f"Lower window {object_frame_id} pose faces the camera; not publishing it",
                 throttle_duration_sec=5.0,
             )
-        else:
-            self._lower_window_pose_publisher.publish(centre_pose)
+            return
+
+        # 1. Publish lower window with top-left origin convention
+        self._lower_window_pose_publisher.publish(pose)
+
+        # 2. Compute and publish upper window pose via known build spec transform
+        upper_pose = compute_upper_window_pose(pose)
+        self._upper_window_pose_publisher.publish(upper_pose)
         try:
             standoff_pose = create_standoff_pose(
                 pose, self.standoff_distance, window_width, window_height
@@ -719,6 +789,42 @@ class DockwinPoseEstimator(PoseEstimatorPosePubNode):
             )
             return
         self._standoff_pose_publisher.publish(standoff_pose)
+
+        # 3. Classify target red window ID (1 = upper, 2 = lower)
+        red_detections = [d for d in window_detections if d.class_name == "red_window"]
+        if red_detections:
+            red_det = red_detections[0]
+            if lower_det is not None and id(lower_det) == id(red_det):
+                self._detected_target_window_id = 2
+            elif rows_distinguished and lower_det is not None:
+                self._detected_target_window_id = 1
+            else:
+                red_pose = published_poses.get(id(red_det))
+                if red_pose is not None:
+                    p_red = np.array(
+                        [red_pose.pose.position.x, red_pose.pose.position.y, red_pose.pose.position.z]
+                    )
+                    p_lower = np.array(
+                        [pose.pose.position.x, pose.pose.position.y, pose.pose.position.z]
+                    )
+                    p_upper = np.array(
+                        [upper_pose.pose.position.x, upper_pose.pose.position.y, upper_pose.pose.position.z]
+                    )
+                    d_lower = float(np.linalg.norm(p_red - p_lower))
+                    d_upper = float(np.linalg.norm(p_red - p_upper))
+                    self._detected_target_window_id = 1 if d_upper < d_lower else 2
+
+    def _get_target_window_id_callback(
+        self, request: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
+        """Return the calculated target window ID (1 = upper, 2 = lower) for RoboCommand reporting."""
+        if self._detected_target_window_id is not None:
+            response.success = True
+            response.message = str(self._detected_target_window_id)
+        else:
+            response.success = False
+            response.message = str(self.default_target_window_id)
+        return response
 
     def _extract_mask_depth(
         self, depth_img: np.ndarray, detection: Detection

@@ -46,6 +46,21 @@ WINDOW_FRAME_REMAP = {
     "null_window": "dockwin/null",
 }
 
+# RobotX 2026 Task 3 Window Panel Specifications (Section 3.5.3)
+# 1000mm x 1000mm white board with upper-left and lower-right 280mm x 360mm cutouts.
+# Offset from lower window top-left origin to upper window top-left origin:
+# dx: -440mm (-0.440 m) to the left
+# dy: -250mm (-0.250 m) upwards (negative in +y down convention)
+# dz: 0mm (0.0 m) coplanar
+UPPER_FROM_LOWER_WINDOW_DX = -0.440
+UPPER_FROM_LOWER_WINDOW_DY = -0.250
+UPPER_FROM_LOWER_WINDOW_DZ = 0.0
+UPPER_FROM_LOWER_WINDOW_OFFSET = (
+    UPPER_FROM_LOWER_WINDOW_DX,
+    UPPER_FROM_LOWER_WINDOW_DY,
+    UPPER_FROM_LOWER_WINDOW_DZ,
+)
+
 # RoboBuoy body bottom footprint, excluding floats and beacon.
 # Source: official RoboBuoy Build Guide, "RoboBuoy Side Panels" drawing:
 # https://robonation.gitbook.io/robotx-2026-team-handbook/robotx-2026-or-task-build-guides/robobuoy-build-guide#robobuoy-side-panels

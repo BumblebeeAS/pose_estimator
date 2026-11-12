@@ -3,6 +3,7 @@ from geometry_msgs.msg import PoseStamped
 
 from pose_estimator.dockwin_pose_estimator_node import (
     _quaternion_matrix,
+    compute_upper_window_pose,
     create_standoff_pose,
     is_lower_window_pose,
     select_lower_window_detection,
@@ -209,3 +210,58 @@ def test_standoff_is_on_the_centre_normal():
     c = np.array([centre.pose.position.x, centre.pose.position.y, centre.pose.position.z])
     st = np.array([standoff.pose.position.x, standoff.pose.position.y, standoff.pose.position.z])
     assert np.allclose(st, c - 2.5 * normal)
+
+
+def test_compute_upper_window_pose_uses_build_spec_offsets():
+    from pose_estimator.config.robotx26_object_points import (
+        UPPER_FROM_LOWER_WINDOW_DX,
+        UPPER_FROM_LOWER_WINDOW_DY,
+        UPPER_FROM_LOWER_WINDOW_DZ,
+    )
+    lower = _window(yaw_deg=15.0)
+    lower.pose.position.x = 0.5
+    lower.pose.position.y = 0.2
+    lower.pose.position.z = 2.8
+
+    upper = compute_upper_window_pose(lower)
+
+    rotation = _quaternion_matrix(lower.pose.orientation)
+    expected = (
+        np.array([0.5, 0.2, 2.8])
+        + rotation[:, 0] * UPPER_FROM_LOWER_WINDOW_DX
+        + rotation[:, 1] * UPPER_FROM_LOWER_WINDOW_DY
+        + rotation[:, 2] * UPPER_FROM_LOWER_WINDOW_DZ
+    )
+    got = np.array([upper.pose.position.x, upper.pose.position.y, upper.pose.position.z])
+    assert np.allclose(got, expected)
+    assert upper.pose.orientation == lower.pose.orientation
+    assert upper.header.frame_id == lower.header.frame_id
+
+
+def test_target_window_id_service_callback():
+    from std_srvs.srv import Trigger
+    from unittest.mock import MagicMock
+
+    node = MagicMock()
+    node.default_target_window_id = 1
+    node._detected_target_window_id = None
+
+    # Fallback response when no red window detected
+    from pose_estimator.dockwin_pose_estimator_node import DockwinPoseEstimator
+    req = Trigger.Request()
+    resp = Trigger.Response()
+    out = DockwinPoseEstimator._get_target_window_id_callback(node, req, resp)
+    assert not out.success
+    assert out.message == "1"
+
+    # Response when red window detected as lower (2)
+    node._detected_target_window_id = 2
+    out = DockwinPoseEstimator._get_target_window_id_callback(node, req, Trigger.Response())
+    assert out.success
+    assert out.message == "2"
+
+    # Response when red window detected as upper (1)
+    node._detected_target_window_id = 1
+    out = DockwinPoseEstimator._get_target_window_id_callback(node, req, Trigger.Response())
+    assert out.success
+    assert out.message == "1"
