@@ -188,6 +188,7 @@ def test_freeze_is_one_report_snapshot(manager, ready_at_freeze):
 def test_report_is_sent_until_the_bridge_confirms(manager):
     node = manager
     node.report_pub = Mock()
+    node.send_report = True
     node.report_retry_period = 0.0
     sent = []
     node.report_client = Mock()
@@ -218,7 +219,7 @@ def test_uav_parameters_load_as_ned():
     if not path.exists():
         path = Path(__file__).resolve().parents[3] / 'vision_pipeline/config/uav/buoy.yaml'
     parameters = yaml.safe_load(path.read_text())['/**/buoy_gate_manager_node']['ros__parameters']
-    args = ['--ros-args']
+    args = ['--ros-args', '-r', '__ns:=/uav/buoy']  # as the drone launches it
     for name, value in parameters.items():
         args += ['-p', f'{name}:={yaml.safe_dump(value, default_flow_style=True).splitlines()[0]}']
     rclpy.init(args=args)
