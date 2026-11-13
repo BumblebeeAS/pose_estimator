@@ -17,11 +17,11 @@ from pose_estimator.utils.pose_estimator import get_object_pose_from_detection_u
 
 COLOR_IDS = {
     "off": BuoyDetection.BLACK, "red": BuoyDetection.RED,
-    "green": BuoyDetection.GREEN, "blue": BuoyDetection.BLUE, "unknown": 255,
+    "green": BuoyDetection.GREEN, "blue": BuoyDetection.BLUE, "unobservable": 255, "unknown": 255,
 }
 POSE_LABEL_COLORS = {
     "red": (1.0, 0.0, 0.0), "green": (0.0, 1.0, 0.0), "blue": (0.0, 0.0, 1.0),
-    "off": (0.0, 0.0, 0.0), "unknown": (0.5, 0.5, 0.5),
+    "off": (0.0, 0.0, 0.0), "unobservable": (0.5, 0.5, 0.5), "unknown": (0.5, 0.5, 0.5),
 }
 
 

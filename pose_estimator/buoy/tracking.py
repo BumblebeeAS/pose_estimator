@@ -1,7 +1,7 @@
 """Spatial buoy tracks and temporal beacon classification, independent of ROS."""
 
 from bisect import bisect_left
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional
@@ -166,7 +166,8 @@ class TrackManager:
             tid for tid, track in self.tracks.items()
             if not track.is_immortal and (
                 not track.observations
-                or current_time - track.last_observation_time > self.track_timeout
+                or (self.track_timeout > 0
+                    and current_time - track.last_observation_time > self.track_timeout)
             )
         ]
         for tid in expired:
@@ -183,7 +184,7 @@ class TrackManager:
         return float(np.sqrt(np.square(magnitudes[band_mask]).sum()))
 
     def classify_tracks(self):
-        """Resample known color observations; unknowns never become OFF samples."""
+        """Count off versus color, vote for the hue, and time only blue's light state."""
         flashing_states = {
             'red': DetectedBuoyColor.FLASHING_RED,
             'green': DetectedBuoyColor.FLASHING_GREEN,
@@ -191,8 +192,22 @@ class TrackManager:
         }
         for track in self.tracks.values():
             known = [o for o in track.observations if o.color is not None]
-            if not known or len(known) / len(track.observations) < self.required_density:
-                continue  # Insufficient observed color coverage; retain the last state.
+            if not known:
+                continue  # Unknown observations carry position, not color evidence.
+            votes = Counter(o.color for o in known if o.color in flashing_states)
+            # Off is evidence against an active light, not a competing hue.
+            # Reuse the configured minimum on-fraction (10% on the UAV).
+            if sum(votes.values()) / len(known) <= self.duty_cycle_min:
+                track.published_state = DetectedBuoyColor.BLACK
+                continue
+            color = max(votes, key=votes.get)
+            if sum(count == votes[color] for count in votes.values()) > 1:
+                continue  # A tied vote retains the previous state.
+            if color in ('red', 'green'):
+                # Each red/green beacon flashes only its own color. Timing is
+                # needed for blue entry/exit, not to identify this color.
+                track.published_state = flashing_states[color]
+                continue
             times = np.array([o.timestamp for o in known])
             # Keep the original time axis: never bridge an unseen interval or splice
             # separate sightings into a fictitious continuous flashing signal.
@@ -214,31 +229,35 @@ class TrackManager:
                 bin_width = frequencies[1] - frequencies[0]
                 half_width = max(self.target_freq_tol, bin_width) + 0.5 * bin_width
                 band = np.abs(frequencies - self.target_freq) <= half_width
-                for color in flashing_states:
-                    values = [float(known[i].color == color) for i in indices]
-                    samples = np.interp(uniform, segment_times, values)
+                # Average near-simultaneous camera observations before resampling.
+                # This avoids treating their arrival order as on/off transitions.
+                bins = np.floor((segment_times - segment_times[0])
+                                * self.virtual_sampling_rate).astype(int)
+                occupied, inverse = np.unique(bins, return_inverse=True)
+                counts = np.bincount(inverse)
+                for candidate in flashing_states:
+                    values = [float(known[i].color == candidate) for i in indices]
+                    means = np.bincount(inverse, weights=values) / counts
+                    samples = np.interp(uniform, segment_times[0] + occupied
+                                        / self.virtual_sampling_rate, means)
                     samples = signal.filtfilt(self.b, self.a, samples)
                     spectrum = np.abs(rfft(samples)) / len(uniform)
                     power = self._band_power(spectrum, band)
                     # Duration-weighted energy and presence, independent of phase
                     # between sightings. Short sightings contribute neither.
-                    evidence[color] += duration * np.array([power ** 2, spectrum[0]])
+                    evidence[candidate] += duration * np.array([power ** 2, spectrum[0]])
                 total_duration += duration
             if not total_duration:
                 continue  # Retain the last state until a continuous sighting qualifies.
             evidence = {color: (np.sqrt(value[0] / total_duration), value[1] / total_duration)
                         for color, value in evidence.items()}
-            color = max(evidence, key=lambda name: evidence[name][0])
             power, presence = evidence[color]
             if power > self.fft_min_magnitude and self.duty_cycle_min < presence < self.duty_cycle_max:
                 track.published_state = flashing_states[color]
             else:
                 blue = evidence['blue'][1]
-                off = max(0.0, 1.0 - sum(dc for _, dc in evidence.values()))
-                if blue > self.consistent_threshold:
+                if color == 'blue' and blue > self.consistent_threshold:
                     track.published_state = DetectedBuoyColor.SOLID_BLUE
-                elif off > self.consistent_threshold:
-                    track.published_state = DetectedBuoyColor.BLACK
                 else:
                     track.published_state = DetectedBuoyColor.UNKNOWN
 

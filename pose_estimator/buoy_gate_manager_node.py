@@ -67,6 +67,8 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             return self.declare_parameter(name, default).value
 
         self.buoy_detections_topic = param("buoy_detections_topic", "buoy_detections")
+        self.buoy_detections_topics = list(dict.fromkeys(
+            param("buoy_detections_topics", [self.buoy_detections_topic])))
         self.marker_topic = param("marker_topic", "gate_manager_markers")
         tf_wait_timeout = param("tf_wait_timeout", 0.25)
         max_pending = param("max_pending_observations", 1000)
@@ -130,13 +132,13 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             logger=self.get_logger(),
         )
 
-        self.detections_sub = self.create_subscription(
+        self.detections_subs = [self.create_subscription(
             BuoyDetectionArray,
-            self.buoy_detections_topic,
+            topic,
             self._on_buoy_detections,
             qos_profile_sensor_data,
             callback_group=self.main_cb_group,
-        )
+        ) for topic in self.buoy_detections_topics]
         self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
 
         # Safe Passage report: built when frozen, then published to the ASV every report_publish_period for as long
@@ -200,7 +202,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
         )
 
         self.get_logger().info(
-            f"BuoyGateManagerNode operational. Listening on '{self.buoy_detections_topic}', "
+            f"BuoyGateManagerNode operational. Listening on {self.buoy_detections_topics}, "
             f"world frame '{self.world_frame_id}', enable={self.enable}."
         )
 
