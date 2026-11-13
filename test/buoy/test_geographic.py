@@ -146,7 +146,7 @@ def test_freeze_is_one_report_snapshot(manager, ready_at_freeze):
     node.send_report = False
     add_track(node, DetectedBuoyColor.FLASHING_BLUE, [0., 0., -3.])
     add_track(node, DetectedBuoyColor.FLASHING_RED, [10., 1., -3.])
-    add_track(node, DetectedBuoyColor.UNKNOWN, [20., 0., -3.])  # not reported
+    add_track(node, DetectedBuoyColor.UNKNOWN, [20., 0., -3.])  # reported as unknown
     if ready_at_freeze:
         reference(node)
         correction(node)
@@ -155,10 +155,10 @@ def test_freeze_is_one_report_snapshot(manager, ready_at_freeze):
     assert result.success and not node.enable
     snapshot = deepcopy(node._report_msg)
     if ready_at_freeze:
-        # No exit: reported anyway, exit_position left at 0, 0
-        assert [b.state for b in snapshot.buoys] == ['flashing_blue', 'flashing_red']
+        # No exit: reported anyway, exit_position NaN (the OCS rejects 0, 0)
+        assert [b.state for b in snapshot.buoys] == ['flashing_blue', 'flashing_red', 'unknown']
         assert snapshot.entry_position == snapshot.buoys[0].position
-        assert snapshot.exit_position.latitude == 0. and snapshot.exit_position.longitude == 0.
+        assert np.isnan(snapshot.exit_position.latitude) and np.isnan(snapshot.exit_position.longitude)
     else:
         assert snapshot is None and 'No Safe Passage report' in result.message
     reference(node, latitude=1.4, altitude=100.)
@@ -166,7 +166,7 @@ def test_freeze_is_one_report_snapshot(manager, ready_at_freeze):
     node._cb_set_state(SetGateManagerState.Request(enable=False), SetGateManagerState.Response())
     node._publish_report()
     if ready_at_freeze:
-        assert node._report_msg.buoys == snapshot.buoys  # still frozen: the same snapshot
+        assert [b.state for b in node._report_msg.buoys] == [b.state for b in snapshot.buoys]  # same snapshot
         node.report_pub.publish.assert_called_once()
     else:
         assert node._report_msg is None

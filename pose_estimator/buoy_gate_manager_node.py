@@ -2,6 +2,7 @@
 """ROS interfaces for stamped buoy observations, tracking, and gate queries."""
 
 from collections import Counter
+from copy import deepcopy
 import json
 import time
 from typing import Optional
@@ -43,8 +44,10 @@ REPORT_QOS = QoSProfile(
 )
 
 
-# Classified track state -> SafePassageBuoy.state (BeaconState vocabulary); UNKNOWN is not reported
+# Track state -> SafePassageBuoy.state (BeaconState vocabulary). The ASV circles none of unknown or off but uses
+# them to snap the others.
 REPORT_STATES = {
+    DetectedBuoyColor.UNKNOWN: "unknown",
     DetectedBuoyColor.BLACK: "off",
     DetectedBuoyColor.FLASHING_RED: "flashing_red",
     DetectedBuoyColor.FLASHING_GREEN: "flashing_green",
@@ -137,20 +140,27 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
         self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
 
         # Safe Passage report: built when frozen, then published to the ASV every report_publish_period for as long
-        # as it stays frozen, and sent to RoboCommand through the OCS bridge until the bridge confirms it
+        # as it stays frozen, and (send_report_on_freeze) sent to RoboCommand through the OCS bridge until the bridge
+        # confirms it: an attempt unanswered after report_timeout is canceled and tried again report_retry_period on
         self._report_msg: Optional[SafePassageReport] = None
         self.report_pub = self.create_publisher(
             SafePassageReport, param("report_topic", "safe_passage/report"), REPORT_QOS)
         self.report_timer = self.create_timer(
             param("report_publish_period", 1.0), self._publish_report, callback_group=self.main_cb_group
         )
-        self.send_report = param("send_report", True)
-        self.report_retry_period = param("report_retry_period", 5.0)  # s between attempts the bridge refused
-        self.report_action = param("report_action", "report/safe_passage")
+        self.send_report = param("send_report_on_freeze", False)
+        self.report_timeout = param("report_timeout", 30.0)  # s, covers the OCS rate budget and its PUBACK wait
+        if not np.isfinite(self.report_timeout) or self.report_timeout <= 0:
+            raise ValueError("report_timeout must be finite and positive")
+        self.report_retry_period = param("report_retry_period", 5.0)  # s after a failed attempt
+        self.report_action = param("report_action", "/uav/report/safe_passage")
         self.report_client = ActionClient(
             self, SendSafePassageReport, self.report_action, callback_group=self.main_cb_group)
         self._report_unsent = False  # the current report still has to reach RoboCommand
         self._report_in_flight = False
+        self._report_attempt = 0  # answers to an older attempt are ignored
+        self._report_deadline = 0.0  # monotonic s
+        self._report_handle = None
         self._report_next_try = 0.0  # monotonic s
 
         # Service servers
@@ -345,20 +355,22 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             return None
 
     def _build_report_msg(self) -> Optional[SafePassageReport]:
-        """SafePassageReport of every classified track, or None if there is none or a conversion fails.
+        """SafePassageReport of every track with a position, or None if there is none.
 
-        Every track with a known state is reported, entry and exit or not. entry_position and exit_position stay
-        0, 0 when that buoy was not found; the ASV only reads buoys[].
+        Every track is reported with its state, entry and exit or not. entry_position and exit_position are NaN when
+        that buoy was not found: the OCS rejects (0, 0) and leaves NaN unset. A track whose conversion fails is left
+        out. The ASV only reads buoys[].
         """
-        report = SafePassageReport()
+        unknown = LatLng(latitude=float("nan"), longitude=float("nan"))
+        report = SafePassageReport(entry_position=unknown, exit_position=deepcopy(unknown))
         for track in self.track_manager.tracks.values():
             state = REPORT_STATES.get(track.published_state)
             if state is None or track.current_centroid is None:
                 continue
             latlon = self._convert_to_ll(track.current_centroid)
             if latlon is None:
-                self.get_logger().error("No Safe Passage report: geographic conversion failed")
-                return None
+                self.get_logger().warning(f"Safe Passage report: track {track.track_id} left out, conversion failed")
+                continue
             position = LatLng(latitude=latlon.latitude, longitude=latlon.longitude)
             report.buoys.append(SafePassageBuoy(position=position, state=state))
             if state == "flashing_blue":
@@ -366,15 +378,20 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             elif state == "steady_blue":
                 report.exit_position = position
         if not report.buoys:
-            self.get_logger().warning("No Safe Passage report: no classified buoys")
+            self.get_logger().warning("No Safe Passage report: no buoy with a position")
             return None
         self.get_logger().info("SAFE_PASSAGE_REPORT " + json.dumps(
             [[b.state, round(b.position.latitude, 7), round(b.position.longitude, 7)] for b in report.buoys]))
         return report
 
     def _set_report(self, report: Optional[SafePassageReport]):
+        """Replaces the served report; an attempt still in flight for the old one is abandoned."""
+        if self._report_handle is not None:
+            self._report_handle.cancel_goal_async()
         self._report_msg = report
         self._report_unsent = report is not None and self.send_report
+        self._report_in_flight, self._report_handle = False, None
+        self._report_attempt += 1
         self._report_next_try = 0.0
 
     def _publish_report(self):
@@ -383,7 +400,15 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
         if report is None or self.enable:
             return
         self.report_pub.publish(report)
-        if self._report_unsent and not self._report_in_flight and time.monotonic() >= self._report_next_try:
+        now = time.monotonic()
+        if self._report_in_flight and now > self._report_deadline:
+            self.get_logger().warning(f"Safe Passage report unanswered after {self.report_timeout:.0f} s; retrying")
+            if self._report_handle is not None:
+                self._report_handle.cancel_goal_async()
+            self._report_in_flight, self._report_handle = False, None
+            self._report_attempt += 1
+            self._report_next_try = now + self.report_retry_period
+        if self._report_unsent and not self._report_in_flight and now >= self._report_next_try:
             self._send_report(report)
 
     def _send_report(self, report: SafePassageReport):
@@ -393,9 +418,14 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             self._report_next_try = time.monotonic() + self.report_retry_period
             return
         self._report_in_flight = True
+        self._report_attempt += 1
+        attempt = self._report_attempt
+        self._report_deadline = time.monotonic() + self.report_timeout
 
         def finished(ok: bool, why: str):
-            self._report_in_flight = False
+            if attempt != self._report_attempt:
+                return  # timed out and superseded
+            self._report_in_flight, self._report_handle = False, None
             if report is not self._report_msg:
                 return  # a newer report (or none) replaced it meanwhile
             if ok:
@@ -414,6 +444,10 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             if not handle.accepted:
                 finished(False, "bridge rejected the goal")
                 return
+            if attempt != self._report_attempt:
+                handle.cancel_goal_async()  # accepted after we gave up on it
+                return
+            self._report_handle = handle
             handle.get_result_async().add_done_callback(on_result)
 
         self.report_client.send_goal_async(SendSafePassageReport.Goal(report=report)).add_done_callback(on_goal)
