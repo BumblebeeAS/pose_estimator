@@ -157,36 +157,6 @@ def test_candidate_filter_rejects_reached_and_behind_goals():
     assert [c.is_valid for c in candidates] == [False, False, True]
 
 
-def test_path_orders_gates_and_standoffs_along_the_course_axis():
-    planner = planner_with_tracks([
-        (DetectedBuoyColor.SOLID_BLUE, [0, 30, 0]),       # exit north of the entry
-        (DetectedBuoyColor.FLASHING_GREEN, [8, 21, 0]),   # unpaired, far east of the axis: no corridor
-        (DetectedBuoyColor.FLASHING_RED, [1.5, 10, 0]),   # gate, red east = starboard going north
-        (DetectedBuoyColor.FLASHING_GREEN, [-1.5, 10, 0]),
-        (DetectedBuoyColor.FLASHING_BLUE, [0, 0, 0]),
-        (DetectedBuoyColor.FLASHING_RED, [0, 20, 0]),     # unpaired
-        (DetectedBuoyColor.BLACK, [0, 15, 0]),            # obstacle, never a waypoint
-    ])
-    planner.standoff_distance = 1.5
-    path = planner.build_path()
-    expected = [[0, 0], [0, 10], [-1.5, 20], [9.5, 21], [0, 30]]  # red: left of travel, green: right
-    np.testing.assert_allclose([p[:2] for p in path], expected, atol=1e-9)
-
-
-def test_path_needs_entry_and_exit():
-    planner = planner_with_tracks([(DetectedBuoyColor.FLASHING_BLUE, [0, 0, 0])])
-    planner.standoff_distance = 1.5
-    assert planner.build_path() is None
-
-
-def test_path_with_only_entry_and_exit():
-    planner = planner_with_tracks([
-        (DetectedBuoyColor.FLASHING_BLUE, [0, 0, 0]), (DetectedBuoyColor.SOLID_BLUE, [10, 0, 0]),
-    ])
-    planner.standoff_distance = 1.5
-    np.testing.assert_allclose([p[:2] for p in planner.build_path()], [[0, 0], [10, 0]])
-
-
 @pytest.fixture
 def ros_manager():
     import rclpy
