@@ -384,14 +384,17 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             [[b.state, round(b.position.latitude, 7), round(b.position.longitude, 7)] for b in report.buoys]))
         return report
 
-    def _set_report(self, report: Optional[SafePassageReport]):
-        """Replaces the served report; an attempt still in flight for the old one is abandoned."""
+    def _cancel_report_attempt(self):
+        """Invalidate callbacks before requesting cancellation of an old send."""
+        self._report_attempt += 1
         if self._report_handle is not None:
             self._report_handle.cancel_goal_async()
+        self._report_in_flight, self._report_handle = False, None
+
+    def _set_report(self, report: Optional[SafePassageReport]):
+        self._cancel_report_attempt()
         self._report_msg = report
         self._report_unsent = report is not None and self.send_report
-        self._report_in_flight, self._report_handle = False, None
-        self._report_attempt += 1
         self._report_next_try = 0.0
 
     def _publish_report(self):
@@ -403,10 +406,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
         now = time.monotonic()
         if self._report_in_flight and now > self._report_deadline:
             self.get_logger().warning(f"Safe Passage report unanswered after {self.report_timeout:.0f} s; retrying")
-            if self._report_handle is not None:
-                self._report_handle.cancel_goal_async()
-            self._report_in_flight, self._report_handle = False, None
-            self._report_attempt += 1
+            self._cancel_report_attempt()
             self._report_next_try = now + self.report_retry_period
         if self._report_unsent and not self._report_in_flight and now >= self._report_next_try:
             self._send_report(report)
@@ -426,8 +426,6 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             if attempt != self._report_attempt:
                 return  # timed out and superseded
             self._report_in_flight, self._report_handle = False, None
-            if report is not self._report_msg:
-                return  # a newer report (or none) replaced it meanwhile
             if ok:
                 self._report_unsent = False
                 self.get_logger().info(f"Safe Passage report sent to RoboCommand ({why})")

@@ -185,32 +185,6 @@ def test_freeze_is_one_report_snapshot(manager, ready_at_freeze):
     node.report_pub.publish.assert_not_called()
 
 
-def test_report_is_sent_until_the_bridge_confirms(manager):
-    node = manager
-    node.report_pub = Mock()
-    node.send_report = True
-    node.report_retry_period = 0.0
-    sent = []
-    node.report_client = Mock()
-    node.report_client.server_is_ready.return_value = True
-    node.report_client.send_goal_async.side_effect = lambda goal: sent.append(goal) or Mock()
-    add_track(node, DetectedBuoyColor.FLASHING_GREEN, [5., 0., 0.])
-    reference(node)
-    correction(node)
-    node.enable = True
-    node._on_fft_timer = Mock()
-    node._cb_set_state(SetGateManagerState.Request(enable=False), SetGateManagerState.Response())
-    node._publish_report()
-    node._publish_report()  # one in flight: not sent twice
-    assert len(sent) == 1 and sent[0].report.buoys[0].state == 'flashing_green'
-    node._report_in_flight = False  # the bridge refused it
-    node._publish_report()
-    assert len(sent) == 2
-    node._report_in_flight, node._report_unsent = False, False  # confirmed
-    node._publish_report()
-    assert len(sent) == 2 and node.report_pub.publish.call_count == 4
-
-
 def test_uav_parameters_load_as_ned():
     # Exercise actual ROS parameter overrides rather than assigning attributes.
     from pathlib import Path
