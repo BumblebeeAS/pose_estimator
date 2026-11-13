@@ -254,7 +254,7 @@ def get_detection_best_fit_quad(
     try:
         polygon_points = get_best_fit_polygon(mask_points, n=4)
     except ValueError as e:
-        logger.warn(f"Failed to get best-fit polygon: {e}, using OBB instead")
+        logger.warning(f"Failed to get best-fit polygon: {e}, using OBB instead")
         _, polygon_points = polygon_to_obb(mask_points)
 
     return polygon_points

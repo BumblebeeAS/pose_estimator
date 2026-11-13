@@ -40,9 +40,13 @@ from pose_estimator.dock_debug import (
 class DockPoseEstimator(LifecycleNode):
     """Continuously estimate dock pose from a mono BEV image using template matching.
 
-    Every frame runs a full coarse-to-fine search over the whole BEV and all
-    360 deg. Nothing is carried over between frames, so a wrong match never
-    locks the search onto a false target.
+    A full search runs a coarse pass over the whole BEV and all 360 deg, then a
+    fine pass within ``fine_search_radius_m`` of the coarse best (0 = whole
+    BEV). With ``track_enabled``, an accepted match is tracked: the next frame
+    searches only within ``track_search_radius_m`` of it and hill-climbs
+    angle/scale from it. A full search still runs when the track drops below
+    ``match_threshold`` and at least every ``track_full_search_period_s``,
+    replacing the track if it scores higher, so a wrong lock cannot persist.
 
     Candidates are scored with ``TM_CCOEFF_NORMED`` (-1..1, higher is better),
     which is invariant to brightness gain/offset, so the greyscale height BEV
@@ -125,11 +129,37 @@ class DockPoseEstimator(LifecycleNode):
         self.fine_angle_step_deg = float(
             self.declare_parameter("fine_angle_step_deg", 0.5).value
         )
+        # Fine pass only within this radius (m) of the coarse best; 0 searches
+        # the whole image.
+        self.fine_search_radius_m = float(
+            self.declare_parameter("fine_search_radius_m", 0.0).value
+        )
+
+        # Tracking: after an accepted match, search only within
+        # track_search_radius_m of it and hill-climb angle/scale from it
+        # (bounded by the windows). A full search still runs at least every
+        # track_full_search_period_s (0 = every frame) and replaces the track
+        # if it scores higher, so a wrong lock cannot persist.
+        self.track_enabled = bool(
+            self.declare_parameter("track_enabled", False).value
+        )
+        self.track_search_radius_m = float(
+            self.declare_parameter("track_search_radius_m", 2.5).value
+        )
+        self.track_angle_window_deg = float(
+            self.declare_parameter("track_angle_window_deg", 20.0).value
+        )
+        self.track_scale_window = float(
+            self.declare_parameter("track_scale_window", 0.1).value
+        )
+        self.track_full_search_period_s = float(
+            self.declare_parameter("track_full_search_period_s", 5.0).value
+        )
 
         # YOLO ROI: the template is only searched around the best BEV YOLO
-        # box. An empty topic searches the whole BEV every frame.
+        # box. An empty topic (default) searches the whole BEV every frame.
         self.detections_topic = self.declare_parameter(
-            "input_detections_topic", "/asv5/bev/yolo/detections"
+            "input_detections_topic", ""
         ).value
         # Slack around the box the template may extend into (m).
         self.roi_padding_m = float(
@@ -176,6 +206,10 @@ class DockPoseEstimator(LifecycleNode):
         self.bridge = CvBridge()
         self.image_center = None
         self.candidate_cache = {}
+        # Last accepted match (full-resolution centre, angle, scale) and the
+        # monotonic time of the last full search.
+        self.track = None
+        self.last_full_search = None
 
         self.pose_pub = None
         self.marker_pub = None
@@ -245,6 +279,9 @@ class DockPoseEstimator(LifecycleNode):
                 self.detections_callback,
                 qos_profile_sensor_data,  # yolo_node publishes best effort
             )
+        # Every activation starts with a full search.
+        self.track = None
+        self.last_full_search = None
         self.get_logger().info(f"Activated, subscribed to {self.input_topic}")
         return super().on_activate(state)
 
@@ -300,6 +337,14 @@ class DockPoseEstimator(LifecycleNode):
             raise ValueError("template_marker_stride must be >= 1")
         if self.roi_padding_m < 0.0:
             raise ValueError("roi_padding_m must be non-negative")
+        if self.fine_search_radius_m < 0.0:
+            raise ValueError("fine_search_radius_m must be non-negative")
+        if self.track_search_radius_m <= 0.0:
+            raise ValueError("track_search_radius_m must be positive")
+        if self.track_angle_window_deg < 0.0 or self.track_scale_window < 0.0:
+            raise ValueError("track windows must be non-negative")
+        if self.track_full_search_period_s < 0.0:
+            raise ValueError("track_full_search_period_s must be non-negative")
 
     def _default_template_path(self):
         try:
@@ -416,18 +461,30 @@ class DockPoseEstimator(LifecycleNode):
         self.candidate_cache[key] = rotated
         return rotated
 
-    def _match_candidate(self, image, scale, angle_deg):
-        """Match one candidate over the whole search image.
+    def _match_candidate(self, image, scale, angle_deg, window=None):
+        """Match one candidate, optionally only within ``window``.
 
-        ``image`` is in search-image (downsampled) pixels; the returned centre
-        is in full-resolution pixels.
+        ``image`` and ``window`` (centre_x, centre_y, radius) are in
+        search-image (downsampled) pixels; the window is grown by the
+        candidate's half size so its centre can land anywhere within radius.
+        The returned centre is in full-resolution pixels.
         """
         candidate = self._candidate(scale, angle_deg, self.search_downsample)
         cand_h, cand_w = candidate.shape[:2]
 
-        if cand_h > image.shape[0] or cand_w > image.shape[1]:
+        x0 = y0 = 0
+        region = image
+        if window is not None:
+            cx, cy, radius = window
+            x0 = max(0, int(np.floor(cx - radius - cand_w / 2.0)))
+            y0 = max(0, int(np.floor(cy - radius - cand_h / 2.0)))
+            x1 = min(image.shape[1], int(np.ceil(cx + radius + cand_w / 2.0)) + 1)
+            y1 = min(image.shape[0], int(np.ceil(cy + radius + cand_h / 2.0)) + 1)
+            region = image[y0:y1, x0:x1]
+
+        if cand_h > region.shape[0] or cand_w > region.shape[1]:
             return None
-        result = cv2.matchTemplate(image, candidate, cv2.TM_CCOEFF_NORMED)
+        result = cv2.matchTemplate(region, candidate, cv2.TM_CCOEFF_NORMED)
         # TM_CCOEFF_NORMED is a similarity in [-1, 1]: the best location is
         # the maximum.
         _, max_val, _, location = cv2.minMaxLoc(result)
@@ -435,23 +492,33 @@ class DockPoseEstimator(LifecycleNode):
             return None
         return {
             "score": float(max_val),
-            "center_u": (location[0] + cand_w / 2.0) / self.search_downsample,
-            "center_v": (location[1] + cand_h / 2.0) / self.search_downsample,
+            "center_u": (x0 + location[0] + cand_w / 2.0) / self.search_downsample,
+            "center_v": (y0 + location[1] + cand_h / 2.0) / self.search_downsample,
             "angle_deg": float(angle_deg) % 360.0,
             "scale": float(scale),
         }
 
-    def _search(self, image, pairs):
-        """Return the best whole-image match over ``(scale, angle_deg)`` pairs."""
+    def _search(self, image, pairs, window=None):
+        """Return the best match over ``(scale, angle_deg)`` pairs."""
         best = None
         for scale, angle_deg in pairs:
-            match = self._match_candidate(image, float(scale), float(angle_deg))
+            match = self._match_candidate(
+                image, float(scale), float(angle_deg), window
+            )
             if match is not None and (best is None or match["score"] > best["score"]):
                 best = match
         return best
 
+    def _window(self, center_u, center_v, radius_m):
+        """(centre_x, centre_y, radius) in search-image pixels."""
+        return (
+            center_u * self.search_downsample,
+            center_v * self.search_downsample,
+            radius_m / self.bev_scale * self.search_downsample,
+        )
+
     def find_best_match(self, search_image):
-        """Full coarse-to-fine search over the whole BEV."""
+        """Coarse search over the whole BEV, fine pass around the coarse best."""
         coarse_angles = np.arange(0.0, 360.0, self.coarse_angle_step_deg)
         coarse_scales = np.arange(
             self.min_template_scale,
@@ -474,8 +541,68 @@ class DockPoseEstimator(LifecycleNode):
             + fine_scale_step * 0.5,
             fine_scale_step,
         )
-        refined = self._search(search_image, product(fine_scales, fine_angles))
+        fine_window = (
+            self._window(best["center_u"], best["center_v"], self.fine_search_radius_m)
+            if self.fine_search_radius_m > 0.0
+            else None
+        )
+        refined = self._search(
+            search_image, product(fine_scales, fine_angles), fine_window
+        )
         return refined if refined is not None else best
+
+    def track_match(self, search_image, track):
+        """Hill-climb angle/scale from ``track`` within a window around it.
+
+        ``track`` centres are in search-image full-resolution pixels. Each
+        step matches the 4 angle/scale neighbours of the current best and
+        moves to the best improvement; it stops when none improves, so a
+        static dock costs ~5 matches.
+        """
+        angle_step = self.fine_angle_step_deg
+        scale_step = self.template_scale_step / 2.0
+        angle_n = int(self.track_angle_window_deg // angle_step)
+        scale_n = int(self.track_scale_window // scale_step)
+        window = self._window(
+            track["center_u"], track["center_v"], self.track_search_radius_m
+        )
+        evaluated = {}
+
+        def evaluate(scale_i, angle_i):
+            # Integer offsets from the tracked pose, so (0, 0) is exact.
+            key = (scale_i, angle_i)
+            if key not in evaluated:
+                scale = track["scale"] + scale_i * scale_step
+                if (
+                    abs(scale_i) > scale_n
+                    or abs(angle_i) > angle_n
+                    or scale < self.min_template_scale - 1e-6
+                    or scale > self.max_template_scale + 1e-6
+                ):
+                    evaluated[key] = None
+                else:
+                    evaluated[key] = self._match_candidate(
+                        search_image,
+                        scale,
+                        track["angle_deg"] + angle_i * angle_step,
+                        window,
+                    )
+            return evaluated[key]
+
+        current = (0, 0)
+        best = evaluate(*current)
+        if best is None:
+            return None
+        while True:
+            step = None
+            for d_scale, d_angle in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                neighbour = (current[0] + d_scale, current[1] + d_angle)
+                match = evaluate(*neighbour)
+                if match is not None and match["score"] > best["score"]:
+                    best, step = match, neighbour
+            if step is None:
+                return best
+            current = step
 
     @staticmethod
     def _bev_pixel_to_asv(center_u, center_v, image_center, metres_per_pixel):
@@ -531,6 +658,7 @@ class DockPoseEstimator(LifecycleNode):
 
         start = monotonic()
         match = None
+        mode = "full"
         if not skip:
             x0, y0, x1, y1 = roi or (0, 0, bev_image.shape[1], bev_image.shape[0])
             search_image = cv2.resize(
@@ -540,13 +668,53 @@ class DockPoseEstimator(LifecycleNode):
                 fy=self.search_downsample,
                 interpolation=cv2.INTER_NEAREST,
             )
-            match = self.find_best_match(search_image)
+            # Track centres are absolute; matches are relative to the crop.
+            if self.track is not None and x0 <= self.track["center_u"] < x1 and (
+                y0 <= self.track["center_v"] < y1
+            ):
+                local = dict(
+                    self.track,
+                    center_u=self.track["center_u"] - x0,
+                    center_v=self.track["center_v"] - y0,
+                )
+                match = self.track_match(search_image, local)
+                mode = "track"
+                if match is None or match["score"] < self.match_threshold:
+                    self.get_logger().info(
+                        "Dock track lost (score=%s), full search"
+                        % ("n/a" if match is None else "%.3f" % match["score"])
+                    )
+                    match = None
+            full_due = (
+                self.last_full_search is None
+                or start - self.last_full_search >= self.track_full_search_period_s
+            )
+            if match is None or full_due:
+                full = self.find_best_match(search_image)
+                self.last_full_search = monotonic()
+                if match is None or (full is not None and full["score"] > match["score"]):
+                    if match is not None:
+                        jump_m = (
+                            np.hypot(
+                                full["center_u"] - match["center_u"],
+                                full["center_v"] - match["center_v"],
+                            )
+                            * self.bev_scale
+                        )
+                        # Same pose re-found is not worth a log line.
+                        if jump_m > self.fine_search_radius_m:
+                            self.get_logger().info(
+                                "Full search beat the track by %.1f m (%.3f > %.3f), "
+                                "switching" % (jump_m, full["score"], match["score"])
+                            )
+                    match, mode = full, "full"
             if match is not None:
                 match["center_u"] += x0
                 match["center_v"] += y0
         elapsed_ms = (monotonic() - start) * 1000.0
 
         accepted = match is not None and match["score"] >= self.match_threshold
+        self.track = match if accepted and self.track_enabled else None
         candidate = (
             self._candidate(match["scale"], match["angle_deg"], 1.0)
             if match is not None
@@ -586,6 +754,25 @@ class DockPoseEstimator(LifecycleNode):
         if roi is not None:
             # Magenta: YOLO search window.
             cv2.rectangle(display, roi[:2], roi[2:], (255, 0, 255), 1)
+        if self.track is not None:
+            # Cyan: next frame's tracking window.
+            cv2.circle(
+                display,
+                (int(round(self.track["center_u"])), int(round(self.track["center_v"]))),
+                int(round(self.track_search_radius_m / self.bev_scale)),
+                (255, 255, 0),
+                1,
+            )
+        cv2.putText(
+            display,
+            mode,
+            (10, 72),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
         if skip:
             cv2.putText(
                 display,

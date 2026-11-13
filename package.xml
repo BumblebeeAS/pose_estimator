@@ -8,6 +8,8 @@
   <license>MIT</license>
 
   <!-- 3rd party -->
+  <exec_depend>frames</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>geographic_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
