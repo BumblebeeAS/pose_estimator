@@ -67,12 +67,10 @@ def test_footprint_callback_publishes_pose_only_when_pnp_succeeds(reject_pnp):
     buoy.bbox.center.position.y = 180.
     buoy.bbox.size.x = buoy.bbox.size.y = 40.
     buoy.mask.data = [Point2D(x=x, y=y) for x, y in [(300., 160.), (340., 160.), (340., 200.), (300., 200.)]]
-    green = deepcopy(buoy)
-    green.class_name = "buoy_green"
     unobservable = deepcopy(buoy)
     unobservable.class_name = "buoy_unobservable"
     detections = DetectionArray(header=header, detections=[
-        buoy, green, deepcopy(buoy), unobservable, Detection(class_name="circle_1"), Detection(class_name="buoy"),
+        buoy, unobservable, deepcopy(buoy), Detection(class_name="circle_1"), Detection(class_name="buoy"),
     ])
     with patch("pose_estimator.buoy_pose_estimator_node.get_object_pose_from_detection_using_best_fit_quad") as estimate:
         if reject_pnp:
@@ -80,7 +78,7 @@ def test_footprint_callback_publishes_pose_only_when_pnp_succeeds(reject_pnp):
         else:
             estimate.return_value = (np.zeros((3, 1)), np.array([[1.], [2.], [3.]]))
         BuoyPoseEstimator.detections_callback(node, detections)
-        assert estimate.call_count == 4
+        assert estimate.call_count == 3
     result = node.pose_pub.publish.call_args.args[0]
     assert result.header.frame_id == "camera"
     assert result.header.stamp == header.stamp
@@ -100,12 +98,12 @@ def test_footprint_callback_publishes_pose_only_when_pnp_succeeds(reject_pnp):
         np.testing.assert_allclose([pose.position.x, pose.position.y, pose.position.z], [1., 2., 3.])
         assert result.detections[0].color == 1
         text = texts[0]
-        assert [text.text for text in texts] == ["buoy_red", "buoy_green", "buoy_red", "buoy_unobservable"]
-        assert len(poses.poses) == 4
-        assert [detection.color for detection in result.detections] == [1, 2, 1, 255]
+        assert [text.text for text in texts] == ["buoy_red", "buoy_unobservable", "buoy_red"]
+        assert len(poses.poses) == 3
+        assert [detection.color for detection in result.detections] == [1, 255, 1]
         assert text.text == "buoy_red"
         assert text.color.r == 1.0 and text.color.a == 1.0
-        assert [marker.id for marker in texts] == [0, 1, 2, 3]
+        assert [marker.id for marker in texts] == [0, 1, 2]
         assert all(marker.type == Marker.TEXT_VIEW_FACING for marker in texts)
         assert all(marker.action == Marker.ADD for marker in texts)
         assert [marker.pose for marker in texts] == poses.poses

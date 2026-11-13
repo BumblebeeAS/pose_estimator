@@ -214,7 +214,7 @@ class TrackManager:
             segments = np.split(np.arange(len(known)),
                                 np.flatnonzero(np.diff(times) > self.max_color_gap) + 1)
             minimum_duration = self.min_flash_cycles / self.target_freq
-            evidence = {color: np.zeros(2) for color in flashing_states}
+            evidence = np.zeros(2)
             total_duration = 0.0
             for indices in segments:
                 segment_times = times[indices]
@@ -235,31 +235,25 @@ class TrackManager:
                                 * self.virtual_sampling_rate).astype(int)
                 occupied, inverse = np.unique(bins, return_inverse=True)
                 counts = np.bincount(inverse)
-                for candidate in flashing_states:
-                    values = [float(known[i].color == candidate) for i in indices]
-                    means = np.bincount(inverse, weights=values) / counts
-                    samples = np.interp(uniform, segment_times[0] + occupied
-                                        / self.virtual_sampling_rate, means)
-                    samples = signal.filtfilt(self.b, self.a, samples)
-                    spectrum = np.abs(rfft(samples)) / len(uniform)
-                    power = self._band_power(spectrum, band)
-                    # Duration-weighted energy and presence, independent of phase
-                    # between sightings. Short sightings contribute neither.
-                    evidence[candidate] += duration * np.array([power ** 2, spectrum[0]])
+                values = [float(known[i].color == 'blue') for i in indices]
+                means = np.bincount(inverse, weights=values) / counts
+                samples = np.interp(uniform, segment_times[0] + occupied
+                                    / self.virtual_sampling_rate, means)
+                samples = signal.filtfilt(self.b, self.a, samples)
+                spectrum = np.abs(rfft(samples)) / len(uniform)
+                power = self._band_power(spectrum, band)
+                # Combine separate sightings without assuming phase alignment.
+                evidence += duration * np.array([power ** 2, spectrum[0]])
                 total_duration += duration
             if not total_duration:
                 continue  # Retain the last state until a continuous sighting qualifies.
-            evidence = {color: (np.sqrt(value[0] / total_duration), value[1] / total_duration)
-                        for color, value in evidence.items()}
-            power, presence = evidence[color]
+            power, presence = np.sqrt(evidence[0] / total_duration), evidence[1] / total_duration
             if power > self.fft_min_magnitude and self.duty_cycle_min < presence < self.duty_cycle_max:
-                track.published_state = flashing_states[color]
+                track.published_state = DetectedBuoyColor.FLASHING_BLUE
+            elif presence > self.consistent_threshold:
+                track.published_state = DetectedBuoyColor.SOLID_BLUE
             else:
-                blue = evidence['blue'][1]
-                if color == 'blue' and blue > self.consistent_threshold:
-                    track.published_state = DetectedBuoyColor.SOLID_BLUE
-                else:
-                    track.published_state = DetectedBuoyColor.UNKNOWN
+                track.published_state = DetectedBuoyColor.UNKNOWN
 
     def deduplicate_singletons(self):
         """Merge entry/exit duplicates into the oldest track, preserving source time."""
