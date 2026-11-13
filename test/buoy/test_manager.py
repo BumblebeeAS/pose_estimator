@@ -87,6 +87,8 @@ def new_track(**options):
 ])
 def test_beacon_classification_uses_only_known_color_samples(kind, expected):
     manager, track = new_track()
+    if kind == "tied_colors":
+        track.published_state = DetectedBuoyColor.FLASHING_GREEN
     for i in range(200):
         on = i % 10 < 5
         if kind == "off": color = "black"
@@ -230,7 +232,8 @@ def test_milestone_services_return_world_pose(ros_manager, entry):
     assert response.buoy_pose.pose.position.x == 1.
 
 
-def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color():
+@pytest.mark.parametrize('separation', [0., 10.])
+def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color(separation):
     manager, primary = new_track()
     duplicate = BuoyTrack()
     manager.tracks[duplicate.track_id] = duplicate
@@ -238,8 +241,13 @@ def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color():
         track.published_state = DetectedBuoyColor.SOLID_BLUE
     for track, stamp, color in [(primary, 3., 'blue'), (primary, 2., None),
                                 (duplicate, 1., 'black'), (duplicate, 2., 'blue')]:
-        manager._add_observation_to_track(track.track_id, color, np.array([stamp, 0., 0.]), stamp)
+        position = np.array([stamp + (separation if track is duplicate else 0.), 0., 0.])
+        manager._add_observation_to_track(track.track_id, color, position, stamp)
+    manager.recompute_centroids()
     manager.deduplicate_singletons()
+    if separation:
+        assert set(manager.tracks) == {primary.track_id, duplicate.track_id}
+        return
     assert list(manager.tracks) == [primary.track_id]
     assert [(o.timestamp, o.color) for o in primary.observations] == [
         (1., 'black'), (2., 'blue'), (3., 'blue'),

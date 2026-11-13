@@ -202,7 +202,8 @@ class TrackManager:
                 continue
             color = max(votes, key=votes.get)
             if sum(count == votes[color] for count in votes.values()) > 1:
-                continue  # A tied vote retains the previous state.
+                track.published_state = DetectedBuoyColor.UNKNOWN
+                continue
             if color in ('red', 'green'):
                 # Each red/green beacon flashes only its own color. Timing is
                 # needed for blue entry/exit, not to identify this color.
@@ -256,7 +257,7 @@ class TrackManager:
                 track.published_state = DetectedBuoyColor.UNKNOWN
 
     def deduplicate_singletons(self):
-        """Merge entry/exit duplicates into the oldest track, preserving source time."""
+        """Merge nearby blue duplicates into the oldest track, preserving source time."""
         for state in (DetectedBuoyColor.FLASHING_BLUE, DetectedBuoyColor.SOLID_BLUE):
             matches = sorted(
                 (track for track in self.tracks.values() if track.published_state == state),
@@ -266,6 +267,10 @@ class TrackManager:
                 continue
             primary, *duplicates = matches
             for duplicate in duplicates:
+                if (primary.current_centroid is None or duplicate.current_centroid is None
+                        or np.linalg.norm(primary.current_centroid[:2] - duplicate.current_centroid[:2])
+                        > self.max_association_radius):
+                    continue
                 for observation in duplicate.observations:
                     self._add_observation_to_track(
                         primary.track_id, observation.color,
