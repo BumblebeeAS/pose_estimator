@@ -8,6 +8,7 @@
   <license>MIT</license>
 
   <!-- 3rd party -->
+  <exec_depend>action_msgs</exec_depend>
   <exec_depend>frames</exec_depend>
   <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>geographic_msgs</exec_depend>
@@ -18,6 +19,7 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
   <exec_depend>python3-sklearn</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
@@ -38,6 +40,7 @@
   <exec_depend>bb_robotx_msgs</exec_depend>
   <exec_depend>px4_msgs</exec_depend>
   <exec_depend>python3-pygeodesy-pip</exec_depend>
+  <exec_depend>frames</exec_depend>
   <exec_depend>image_processing</exec_depend>
   <exec_depend>yolo_msgs</exec_depend>
 

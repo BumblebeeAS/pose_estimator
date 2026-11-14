@@ -54,3 +54,7 @@ On the transition from collecting to frozen, the manager builds and converts the
 
 - YOLO detections detect red poles reliably.
 - The camera looks at the slalom gate from the front (looking from the side would lead to inaccurate pairing of poles to layers).
+
+## UAV tin observations
+
+Tin detections intersect the shared pad plane and retain position-only estimates when orientation is unavailable. Metric footprint size is logged for diagnosis; pickup selection uses distance to the pad centre. Cropped masks use their visible circle geometry rather than treating the crop width as a full tin diameter.
