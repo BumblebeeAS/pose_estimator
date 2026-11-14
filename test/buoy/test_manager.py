@@ -80,11 +80,15 @@ def new_track(**options):
     ("flashing_green", DetectedBuoyColor.FLASHING_GREEN),
     ("flashing_blue", DetectedBuoyColor.FLASHING_BLUE),
     ("unknown", DetectedBuoyColor.UNKNOWN),
-    ("red_unknown", DetectedBuoyColor.UNKNOWN),
-    ("off_unknown", DetectedBuoyColor.UNKNOWN),
+    ("red_unknown", DetectedBuoyColor.FLASHING_RED),
+    ("off_unknown", DetectedBuoyColor.BLACK),
+    ("off_with_red_noise", DetectedBuoyColor.BLACK),
+    ("tied_colors", DetectedBuoyColor.UNKNOWN),
 ])
 def test_beacon_classification_uses_only_known_color_samples(kind, expected):
     manager, track = new_track()
+    if kind == "tied_colors":
+        track.published_state = DetectedBuoyColor.FLASHING_GREEN
     for i in range(200):
         on = i % 10 < 5
         if kind == "off": color = "black"
@@ -92,6 +96,8 @@ def test_beacon_classification_uses_only_known_color_samples(kind, expected):
         elif kind == "unknown": color = None
         elif kind == "red_unknown": color = "red" if on else None
         elif kind == "off_unknown": color = "black" if i % 4 == 0 else None
+        elif kind == "off_with_red_noise": color = "red" if i < 20 else "black"
+        elif kind == "tied_colors": color = "red" if on else "green"
         else: color = kind.removeprefix("flashing_") if on else "black"
         manager._add_observation_to_track(track.track_id, color, np.zeros(3), 100 + i / 10)
     manager.classify_tracks()
@@ -226,7 +232,8 @@ def test_milestone_services_return_world_pose(ros_manager, entry):
     assert response.buoy_pose.pose.position.x == 1.
 
 
-def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color():
+@pytest.mark.parametrize('separation', [0., 10.])
+def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color(separation):
     manager, primary = new_track()
     duplicate = BuoyTrack()
     manager.tracks[duplicate.track_id] = duplicate
@@ -234,8 +241,13 @@ def test_singleton_merge_keeps_observations_sorted_and_upgrades_unknown_color():
         track.published_state = DetectedBuoyColor.SOLID_BLUE
     for track, stamp, color in [(primary, 3., 'blue'), (primary, 2., None),
                                 (duplicate, 1., 'black'), (duplicate, 2., 'blue')]:
-        manager._add_observation_to_track(track.track_id, color, np.array([stamp, 0., 0.]), stamp)
+        position = np.array([stamp + (separation if track is duplicate else 0.), 0., 0.])
+        manager._add_observation_to_track(track.track_id, color, position, stamp)
+    manager.recompute_centroids()
     manager.deduplicate_singletons()
+    if separation:
+        assert set(manager.tracks) == {primary.track_id, duplicate.track_id}
+        return
     assert list(manager.tracks) == [primary.track_id]
     assert [(o.timestamp, o.color) for o in primary.observations] == [
         (1., 'black'), (2., 'blue'), (3., 'blue'),
@@ -354,13 +366,13 @@ def test_missing_heading_rejects_goals_without_inventing_a_direction(ros_manager
 
 @pytest.mark.parametrize('rate,duration,expected', [
     (100., 1., DetectedBuoyColor.UNKNOWN),  # Many samples cannot replace elapsed cycles.
-    (5., 5., DetectedBuoyColor.FLASHING_RED),  # Fewer than 40 samples can be sufficient.
-    (10., 5., DetectedBuoyColor.FLASHING_RED),
+    (5., 5., DetectedBuoyColor.FLASHING_BLUE),  # Fewer than 40 samples can be sufficient.
+    (10., 5., DetectedBuoyColor.FLASHING_BLUE),
 ])
 def test_fft_requires_observed_cycles_instead_of_sample_count(rate, duration, expected):
     manager, track = new_track(target_freq=.5, fft_min_magnitude=.15)
     for t in np.arange(0., duration, 1. / rate):
-        color = 'red' if t % 2 < 1 else 'black'
+        color = 'blue' if t % 2 < 1 else 'black'
         manager._add_observation_to_track(track.track_id, color, np.zeros(3), 100 + t)
     manager.classify_tracks()
     assert track.published_state == expected
@@ -371,7 +383,7 @@ def test_short_sightings_are_not_spliced_across_visibility_gaps():
     for start in np.arange(0., 20., 2.):
         # Alternating short sightings would look periodic if interpolated over gaps.
         for t in np.arange(0., .6, .1):
-            color = 'red' if start % 4 == 0 else 'black'
+            color = 'blue' if start % 4 == 0 else 'black'
             manager._add_observation_to_track(track.track_id, color, np.zeros(3), 100 + start + t)
     manager.classify_tracks()
     assert track.published_state == DetectedBuoyColor.UNKNOWN
@@ -381,7 +393,7 @@ def test_separate_flashing_segments_combine_evidence_without_phase_alignment():
     manager, track = new_track(target_freq=.5, fft_min_magnitude=.15)
     for start, phase in [(0., 0.), (10., .7)]:
         for t in np.arange(0., 5., .1):
-            color = 'green' if (t + phase) % 2 < 1 else 'black'
+            color = 'blue' if (t + phase) % 2 < 1 else 'black'
             manager._add_observation_to_track(track.track_id, color, np.zeros(3), 100 + start + t)
     manager.classify_tracks()
-    assert track.published_state == DetectedBuoyColor.FLASHING_GREEN
+    assert track.published_state == DetectedBuoyColor.FLASHING_BLUE

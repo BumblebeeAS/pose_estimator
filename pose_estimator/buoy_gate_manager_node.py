@@ -44,8 +44,8 @@ REPORT_QOS = QoSProfile(
 )
 
 
-# Track state -> SafePassageBuoy.state (BeaconState vocabulary). The ASV circles none of unknown or off but uses
-# them to snap the others.
+# Track state -> SafePassageBuoy.state (BeaconState vocabulary). Unknowns are
+# omitted from the ASV map and guessed only in the RoboCommand report.
 REPORT_STATES = {
     DetectedBuoyColor.UNKNOWN: "unknown",
     DetectedBuoyColor.BLACK: "off",
@@ -53,6 +53,14 @@ REPORT_STATES = {
     DetectedBuoyColor.FLASHING_GREEN: "flashing_green",
     DetectedBuoyColor.FLASHING_BLUE: "flashing_blue",
     DetectedBuoyColor.SOLID_BLUE: "steady_blue",
+}
+
+# User-provided expected state ratio for filling unknowns in the frozen report.
+REPORT_GUESS_RATIO = {
+    "flashing_red": 4,
+    "flashing_green": 4,
+    "steady_blue": 1,
+    "flashing_blue": 1,
 }
 
 
@@ -67,6 +75,8 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             return self.declare_parameter(name, default).value
 
         self.buoy_detections_topic = param("buoy_detections_topic", "buoy_detections")
+        self.buoy_detections_topics = list(dict.fromkeys(
+            param("buoy_detections_topics", [self.buoy_detections_topic])))
         self.marker_topic = param("marker_topic", "gate_manager_markers")
         tf_wait_timeout = param("tf_wait_timeout", 0.25)
         max_pending = param("max_pending_observations", 1000)
@@ -130,19 +140,18 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
             logger=self.get_logger(),
         )
 
-        self.detections_sub = self.create_subscription(
+        self.detections_subs = [self.create_subscription(
             BuoyDetectionArray,
-            self.buoy_detections_topic,
+            topic,
             self._on_buoy_detections,
             qos_profile_sensor_data,
             callback_group=self.main_cb_group,
-        )
+        ) for topic in self.buoy_detections_topics]
         self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
 
-        # Safe Passage report: built when frozen, then published to the ASV every report_publish_period for as long
-        # as it stays frozen, and (send_report_on_freeze) sent to RoboCommand through the OCS bridge until the bridge
-        # confirms it: an attempt unanswered after report_timeout is canceled and tried again report_retry_period on
-        self._report_msg: Optional[SafePassageReport] = None
+        # Serve the frozen map to the ASV; optionally retry delivery to RoboCommand.
+        self._report_msg: Optional[SafePassageReport] = None  # RoboCommand, with frozen guesses
+        self._asv_report_msg: Optional[SafePassageReport] = None  # observed states only
         self.report_pub = self.create_publisher(
             SafePassageReport, param("report_topic", "safe_passage/report"), REPORT_QOS)
         self.report_timer = self.create_timer(
@@ -200,7 +209,7 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
         )
 
         self.get_logger().info(
-            f"BuoyGateManagerNode operational. Listening on '{self.buoy_detections_topic}', "
+            f"BuoyGateManagerNode operational. Listening on {self.buoy_detections_topics}, "
             f"world frame '{self.world_frame_id}', enable={self.enable}."
         )
 
@@ -354,15 +363,53 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
         except ValueError:
             return None
 
-    def _build_report_msg(self) -> Optional[SafePassageReport]:
-        """SafePassageReport of every track with a position, or None if there is none.
+    def _guess_unknown_report_states(self, report):
+        unknowns = [b for b in report.buoys if b.state == "unknown"]
+        if not unknowns:
+            return
+        states = tuple(REPORT_GUESS_RATIO)
+        ratio = np.array(list(REPORT_GUESS_RATIO.values()), dtype=float)
+        expected = len(report.buoys) * ratio / ratio.sum()
+        confirmed = Counter(b.state for b in report.buoys if b.state != "unknown")
+        initial_confirmed = dict(confirmed)
+        remaining = np.maximum(0.0, expected - np.array([confirmed[s] for s in states]))
+        for i, state in enumerate(states):
+            if state in ('steady_blue', 'flashing_blue'):
+                remaining[i] = min(remaining[i], max(0, 1 - confirmed[state]))
+        rng = np.random.default_rng()
+        assignments = []
+        for buoy in unknowns:
+            available = np.array([state not in ('steady_blue', 'flashing_blue') or confirmed[state] < 1
+                                  for state in states])
+            weights = remaining * available
+            total = float(weights.sum())
+            # Excess confirmed counts cannot create negative probabilities. If
+            # no positive deficit remains, fall back to the original ratio.
+            if not np.isfinite(total) or total <= 0:
+                weights = ratio * available  # Red/green always remain available.
+                total = float(weights.sum())
+            probabilities = weights / total
+            index = int(rng.choice(len(states), p=probabilities))
+            buoy.state = states[index]
+            confirmed[buoy.state] += 1
+            remaining[index] = max(0.0, remaining[index] - 1.0)
+            assignments.append({'latitude': buoy.position.latitude, 'longitude': buoy.position.longitude,
+                                'state': buoy.state, 'probabilities': probabilities.tolist()})
+        self.get_logger().info('SAFE_PASSAGE_REPORT_GUESSES ' + json.dumps({
+            'total_detected': len(report.buoys), 'states': states,
+            'expected': expected.tolist(), 'confirmed': initial_confirmed, 'assignments': assignments,
+        }))
 
-        Every track is reported with its state, entry and exit or not. entry_position and exit_position are NaN when
-        that buoy was not found: the OCS rejects (0, 0) and leaves NaN unset. A track whose conversion fails is left
-        out. The ASV only reads buoys[].
+    def _build_report_msg(self) -> Optional[SafePassageReport]:
+        """Freeze positions and inferred report states, including an empty report.
+
+        Select one measured candidate per blue role without changing track states.
+        Unknowns stay unresolved here so each recipient can apply its own policy.
+        Missing entry/exit positions remain NaN; failed position conversions are omitted.
         """
         unknown = LatLng(latitude=float("nan"), longitude=float("nan"))
         report = SafePassageReport(entry_position=unknown, exit_position=deepcopy(unknown))
+        report_tracks = []
         for track in self.track_manager.tracks.values():
             state = REPORT_STATES.get(track.published_state)
             if state is None or track.current_centroid is None:
@@ -373,16 +420,32 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
                 continue
             position = LatLng(latitude=latlon.latitude, longitude=latlon.longitude)
             report.buoys.append(SafePassageBuoy(position=position, state=state))
-            if state == "flashing_blue":
-                report.entry_position = position
-            elif state == "steady_blue":
-                report.exit_position = position
-        if not report.buoys:
-            self.get_logger().warning("No Safe Passage report: no buoy with a position")
-            return None
+            report_tracks.append(track)
+        for state, metric in (('steady_blue', 'blue_presence'), ('flashing_blue', 'blue_power')):
+            candidates = [i for i, buoy in enumerate(report.buoys) if buoy.state == state]
+            if not candidates:
+                continue
+            selected = max(candidates, key=lambda i: (
+                getattr(report_tracks[i], metric, 0.0),
+                getattr(report_tracks[i], 'blue_duration', 0.0), -report_tracks[i].track_id))
+            for i in candidates:
+                if i != selected:
+                    report.buoys[i].state = 'unknown'
+            self.get_logger().info('SAFE_PASSAGE_BLUE_SELECTION ' + json.dumps({
+                'state': state, 'selected_track': report_tracks[selected].track_id,
+                'candidate_tracks': [report_tracks[i].track_id for i in candidates],
+            }))
+        self._set_report_endpoints(report)
         self.get_logger().info("SAFE_PASSAGE_REPORT " + json.dumps(
             [[b.state, round(b.position.latitude, 7), round(b.position.longitude, 7)] for b in report.buoys]))
         return report
+
+    @staticmethod
+    def _set_report_endpoints(report):
+        unknown = LatLng(latitude=float("nan"), longitude=float("nan"))
+        for state, field in (('flashing_blue', 'entry_position'), ('steady_blue', 'exit_position')):
+            selected = next((b for b in report.buoys if b.state == state), None)
+            setattr(report, field, deepcopy(selected.position) if selected is not None else deepcopy(unknown))
 
     def _cancel_report_attempt(self):
         """Invalidate callbacks before requesting cancellation of an old send."""
@@ -393,16 +456,22 @@ class BuoyGateManagerNode(GatePlanning, GateVisualization, Px4GeographicReferenc
 
     def _set_report(self, report: Optional[SafePassageReport]):
         self._cancel_report_attempt()
-        self._report_msg = report
+        self._asv_report_msg = deepcopy(report)
+        self._report_msg = deepcopy(report)
+        if report is not None:
+            self._asv_report_msg.buoys = [b for b in self._asv_report_msg.buoys if b.state != 'unknown']
+            self._set_report_endpoints(self._asv_report_msg)
+            self._guess_unknown_report_states(self._report_msg)
+            self._set_report_endpoints(self._report_msg)
         self._report_unsent = report is not None and self.send_report
         self._report_next_try = 0.0
 
     def _publish_report(self):
-        """Serves the frozen report to the ASV, and sends it to RoboCommand until the bridge confirms it."""
+        """Publish observed states to ASV; send the frozen guessed report to RoboCommand."""
         report = self._report_msg
         if report is None or self.enable:
             return
-        self.report_pub.publish(report)
+        self.report_pub.publish(self._asv_report_msg)
         now = time.monotonic()
         if self._report_in_flight and now > self._report_deadline:
             self.get_logger().warning(f"Safe Passage report unanswered after {self.report_timeout:.0f} s; retrying")

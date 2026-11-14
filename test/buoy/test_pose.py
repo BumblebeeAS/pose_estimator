@@ -67,10 +67,10 @@ def test_footprint_callback_publishes_pose_only_when_pnp_succeeds(reject_pnp):
     buoy.bbox.center.position.y = 180.
     buoy.bbox.size.x = buoy.bbox.size.y = 40.
     buoy.mask.data = [Point2D(x=x, y=y) for x, y in [(300., 160.), (340., 160.), (340., 200.), (300., 200.)]]
-    green = deepcopy(buoy)
-    green.class_name = "buoy_green"
+    unobservable = deepcopy(buoy)
+    unobservable.class_name = "buoy_unobservable"
     detections = DetectionArray(header=header, detections=[
-        buoy, green, deepcopy(buoy), Detection(class_name="circle_1"), Detection(class_name="buoy"),
+        buoy, unobservable, deepcopy(buoy), Detection(class_name="circle_1"), Detection(class_name="buoy"),
     ])
     with patch("pose_estimator.buoy_pose_estimator_node.get_object_pose_from_detection_using_best_fit_quad") as estimate:
         if reject_pnp:
@@ -98,9 +98,9 @@ def test_footprint_callback_publishes_pose_only_when_pnp_succeeds(reject_pnp):
         np.testing.assert_allclose([pose.position.x, pose.position.y, pose.position.z], [1., 2., 3.])
         assert result.detections[0].color == 1
         text = texts[0]
-        assert [text.text for text in texts] == ["buoy_red", "buoy_green", "buoy_red"]
+        assert [text.text for text in texts] == ["buoy_red", "buoy_unobservable", "buoy_red"]
         assert len(poses.poses) == 3
-        assert [detection.color for detection in result.detections] == [1, 2, 1]
+        assert [detection.color for detection in result.detections] == [1, 255, 1]
         assert text.text == "buoy_red"
         assert text.color.r == 1.0 and text.color.a == 1.0
         assert [marker.id for marker in texts] == [0, 1, 2]
@@ -159,3 +159,15 @@ def test_contours_are_not_rejected_for_border_contact_or_quad_coverage(polygon):
         camera, BUOY_FOOTPRINT_OBJECT_POINTS[:, :2], detection, Mock()
     )
     assert np.isfinite(center).all() and center.ravel()[2] > 0
+
+
+def test_quad_fallback_uses_supported_ros_warning_method():
+    from unittest.mock import patch
+    from pose_estimator.utils.detections import get_detection_best_fit_quad
+    detection = Detection()
+    detection.mask.data = [Point2D(x=x, y=y) for x, y in [(0., 0.), (1., 0.), (0., 1.)]]
+    logger = Mock(spec=['warning'])
+    with patch('pose_estimator.utils.detections.get_best_fit_polygon', side_effect=ValueError('triangle')):
+        quad = get_detection_best_fit_quad(detection, logger)
+    assert np.asarray(quad).shape == (4, 2)
+    logger.warning.assert_called_once()
