@@ -93,3 +93,43 @@ def test_new_report_abandons_the_old_attempt_and_collecting_stops_serving():
     node.enable = True
     node._publish_report()
     assert node.report_pub.publish.call_count == 2
+
+
+def test_asv_omits_unknown_and_excess_blue_candidates_but_robocommand_guesses_them():
+    node = bare([(state, [i * 5, 0, 0]) for i, state in enumerate([
+        DetectedBuoyColor.FLASHING_RED, DetectedBuoyColor.BLACK,
+        DetectedBuoyColor.FLASHING_BLUE, DetectedBuoyColor.SOLID_BLUE,
+        DetectedBuoyColor.SOLID_BLUE, DetectedBuoyColor.UNKNOWN])])
+    bridge = Bridge(node)
+    observed = node._build_report_msg()
+    node._set_report(observed)
+    node._publish_report()
+    asv = node.report_pub.publish.call_args.args[0]
+    rc = bridge.sent[0][0].report
+    assert [b.state for b in asv.buoys] == ['flashing_red', 'off', 'flashing_blue', 'steady_blue']
+    assert len(rc.buoys) == 6 and all(b.state != 'unknown' for b in rc.buoys)
+    assert sum(b.state == 'steady_blue' for b in rc.buoys) == 1
+    assert sum(b.state == 'flashing_blue' for b in rc.buoys) == 1
+    assert [b.state for b in observed.buoys][-2:] == ['unknown', 'unknown']
+    frozen_states = [b.state for b in rc.buoys]
+    node._report_deadline = time.monotonic() - 1.
+    node._publish_report()  # Retry must reuse guesses and keep ASV output separate.
+    assert [b.state for b in bridge.sent[1][0].report.buoys] == frozen_states
+    assert node.report_pub.publish.call_args.args[0] is asv
+    node._set_report(None)
+    assert node._asv_report_msg is None and node._report_msg is None
+
+
+def test_guessed_blue_endpoint_is_never_sent_to_asv(monkeypatch):
+    rng = np.random.default_rng
+    monkeypatch.setattr(np.random, 'default_rng', lambda: rng(4))
+    node = bare([(DetectedBuoyColor.UNKNOWN, [0, 0, 0])])
+    bridge = Bridge(node)
+    node._set_report(node._build_report_msg())
+    node._publish_report()
+    asv = node.report_pub.publish.call_args.args[0]
+    rc = bridge.sent[0][0].report
+    assert not asv.buoys
+    assert np.isnan(asv.entry_position.latitude) and np.isnan(asv.exit_position.latitude)
+    assert rc.buoys[0].state == 'flashing_blue'
+    assert rc.entry_position == rc.buoys[0].position

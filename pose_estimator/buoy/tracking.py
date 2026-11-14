@@ -38,6 +38,7 @@ class BuoyTrack:
         self.current_centroid: Optional[np.ndarray] = None
         self.published_state: DetectedBuoyColor = DetectedBuoyColor.UNKNOWN
         self.last_observation_time: float = 0.0
+        self.blue_power = self.blue_presence = self.blue_duration = 0.0
 
     @property
     def is_immortal(self) -> bool:
@@ -249,6 +250,8 @@ class TrackManager:
             if not total_duration:
                 continue  # Retain the last state until a continuous sighting qualifies.
             power, presence = np.sqrt(evidence[0] / total_duration), evidence[1] / total_duration
+            track.blue_power, track.blue_presence = float(power), float(presence)
+            track.blue_duration = total_duration
             if power > self.fft_min_magnitude and self.duty_cycle_min < presence < self.duty_cycle_max:
                 track.published_state = DetectedBuoyColor.FLASHING_BLUE
             elif presence > self.consistent_threshold:

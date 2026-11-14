@@ -146,7 +146,7 @@ def test_freeze_is_one_report_snapshot(manager, ready_at_freeze):
     node.send_report = False
     add_track(node, DetectedBuoyColor.FLASHING_BLUE, [0., 0., -3.])
     add_track(node, DetectedBuoyColor.FLASHING_RED, [10., 1., -3.])
-    add_track(node, DetectedBuoyColor.UNKNOWN, [20., 0., -3.])  # reported as unknown
+    add_track(node, DetectedBuoyColor.UNKNOWN, [20., 0., -3.])  # Guessed for RoboCommand, omitted for ASV
     if ready_at_freeze:
         reference(node)
         correction(node)
@@ -156,11 +156,14 @@ def test_freeze_is_one_report_snapshot(manager, ready_at_freeze):
     snapshot = deepcopy(node._report_msg)
     if ready_at_freeze:
         # No exit: reported anyway, exit_position NaN (the OCS rejects 0, 0)
-        assert [b.state for b in snapshot.buoys] == ['flashing_blue', 'flashing_red', 'unknown']
+        assert [b.state for b in snapshot.buoys[:2]] == ['flashing_blue', 'flashing_red']
+        assert snapshot.buoys[2].state != 'unknown'
+        assert len(node._asv_report_msg.buoys) == 2
         assert snapshot.entry_position == snapshot.buoys[0].position
-        assert np.isnan(snapshot.exit_position.latitude) and np.isnan(snapshot.exit_position.longitude)
+        if snapshot.buoys[2].state != 'steady_blue':
+            assert np.isnan(snapshot.exit_position.latitude) and np.isnan(snapshot.exit_position.longitude)
     else:
-        assert snapshot is None and 'No Safe Passage report' in result.message
+        assert snapshot is not None and not snapshot.buoys
     reference(node, latitude=1.4, altitude=100.)
     correction(node)
     node._cb_set_state(SetGateManagerState.Request(enable=False), SetGateManagerState.Response())
@@ -169,8 +172,8 @@ def test_freeze_is_one_report_snapshot(manager, ready_at_freeze):
         assert [b.state for b in node._report_msg.buoys] == [b.state for b in snapshot.buoys]  # same snapshot
         node.report_pub.publish.assert_called_once()
     else:
-        assert node._report_msg is None
-        node.report_pub.publish.assert_not_called()
+        assert node._report_msg is not None and not node._report_msg.buoys
+        node.report_pub.publish.assert_called_once()
     node._cb_set_state(SetGateManagerState.Request(enable=True), SetGateManagerState.Response())
     node.report_pub.reset_mock()
     node._publish_report()

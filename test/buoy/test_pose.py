@@ -159,3 +159,15 @@ def test_contours_are_not_rejected_for_border_contact_or_quad_coverage(polygon):
         camera, BUOY_FOOTPRINT_OBJECT_POINTS[:, :2], detection, Mock()
     )
     assert np.isfinite(center).all() and center.ravel()[2] > 0
+
+
+def test_quad_fallback_uses_supported_ros_warning_method():
+    from unittest.mock import patch
+    from pose_estimator.utils.detections import get_detection_best_fit_quad
+    detection = Detection()
+    detection.mask.data = [Point2D(x=x, y=y) for x, y in [(0., 0.), (1., 0.), (0., 1.)]]
+    logger = Mock(spec=['warning'])
+    with patch('pose_estimator.utils.detections.get_best_fit_polygon', side_effect=ValueError('triangle')):
+        quad = get_detection_best_fit_quad(detection, logger)
+    assert np.asarray(quad).shape == (4, 2)
+    logger.warning.assert_called_once()
