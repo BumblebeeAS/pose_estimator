@@ -102,7 +102,7 @@ def fit_circle_RANSAC(
     Args:
         points (np.ndarray): N x 2
         num_iter (int): Number of iterations to run the RANSAC loop for
-        thresh (float): Inlier threshold in pixels (abs(distance_to_center - r))
+        thresh (float): Radial inlier tolerance, in the same units as points.
 
     Raises:
         ValueError: If <3 points are supplied.
@@ -118,13 +118,10 @@ def fit_circle_RANSAC(
     best_inlier_mask = np.zeros(len(points), dtype=bool)
 
     for _ in range(num_iter):
-        while True:
-            sample_idxs = np.random.choice(
-                np.arange(len(points)), size=3, replace=False
-            )
-            p1, p2, p3 = points[sample_idxs]
-            if not is_points_collinear(p1, p2, p3):
-                break
+        sample_idxs = np.random.choice(len(points), size=3, replace=False)
+        p1, p2, p3 = points[sample_idxs]
+        if is_points_collinear(p1, p2, p3):
+            continue
 
         cx, cy, r = get_circle_from_3_pts(p1, p2, p3)
         d = np.hypot(points[:, 0] - cx, points[:, 1] - cy)
@@ -137,6 +134,8 @@ def fit_circle_RANSAC(
 
     # Refinement
     inlier_points = points[best_inlier_mask]
+    if len(inlier_points) < 3:
+        raise ValueError("Could not fit a circle to the supplied points")
     circle = fit_circle_least_squares(inlier_points)
 
     return circle, inlier_points
